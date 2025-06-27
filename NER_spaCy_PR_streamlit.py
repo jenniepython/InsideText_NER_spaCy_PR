@@ -802,13 +802,21 @@ class EntityLinker:
             
             # Enhanced validation using grammatical context
             if self._is_valid_entity(ent.text, entity_type, ent):
+                # Fix: spaCy Span objects don't have .get() method
+                # Instead, check if the span has a confidence attribute or use default
+                confidence = 1.0
+                if hasattr(ent, '_') and hasattr(ent._, 'confidence'):
+                    confidence = ent._.confidence
+                elif hasattr(ent, 'ent_score'):
+                    confidence = ent.ent_score
+                
                 entities.append({
                     'text': ent.text,
                     'type': entity_type,
                     'start': ent.start_char,
                     'end': ent.end_char,
                     'label': ent.label_,  # Keep original spaCy label
-                    'confidence': ent.get('confidence', 1.0) if hasattr(ent, '_') else 1.0
+                    'confidence': confidence
                 })
         
         # Step 2: Extract addresses
