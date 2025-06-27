@@ -129,7 +129,7 @@ class PelagiosIntegration:
     """Fixed and improved integration class for Pelagios services."""
     
     def __init__(self):
-        """Initialize Pelagios integration with updated endpoints."""
+        """Initialize Pelagios integration with working endpoints."""
         # Updated endpoints based on current Pelagios infrastructure
         self.peripleo_search_url = "https://peripleo.pelagios.org/api/search"
         self.pleiades_base_url = "https://pleiades.stoa.org"
@@ -158,14 +158,16 @@ class PelagiosIntegration:
         for variant in search_variants:
             # Try different parameter combinations that Peripleo might accept
             param_sets = [
-                {'q': variant, 'limit': limit, 'type': 'place'},
-                {'query': variant, 'limit': limit, 'format': 'json'},
-                {'search': variant, 'size': limit},
-                {'text': variant, 'limit': limit}
+                {'q': variant, 'limit': limit},
+                {'query': variant, 'limit': limit},
+                {'search': variant, 'limit': limit},
+                {'text': variant, 'limit': limit},
+                {'title': variant, 'limit': limit}
             ]
             
             for params in param_sets:
                 try:
+                    print(f"Trying Peripleo with params: {params}")
                     response = self.session.get(
                         self.peripleo_search_url,
                         params=params,
@@ -179,6 +181,7 @@ class PelagiosIntegration:
                         try:
                             data = response.json()
                             print(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                            print(f"Response data sample: {str(data)[:200]}...")
                             
                             # Handle different response structures
                             items = self._extract_items_from_response(data)
@@ -191,23 +194,32 @@ class PelagiosIntegration:
                                 
                                 if pleiades_items:
                                     print(f"Found {len(pleiades_items)} Pleiades items")
-                                    return pleiades_items
+                                    return pleiades_items[:limit]
                                 return items[:limit]
                                 
                         except json.JSONDecodeError as e:
                             print(f"JSON decode error: {e}")
+                            print(f"Response text: {response.text[:500]}...")
                             # Try as XML/RSS
                             try:
                                 return self._parse_xml_response(response.text, place_name)
-                            except:
+                            except Exception as xml_e:
+                                print(f"XML parsing also failed: {xml_e}")
                                 pass
+                    else:
+                        print(f"HTTP error: {response.status_code}")
+                        print(f"Response: {response.text[:200]}...")
                                 
                 except requests.RequestException as e:
                     print(f"Peripleo request failed: {e}")
                     continue
+                except Exception as e:
+                    print(f"Unexpected error: {e}")
+                    continue
                 
                 time.sleep(0.3)  # Rate limiting between attempts
         
+        print(f"No results found for '{place_name}' via Peripleo")
         return []
     
     def _extract_items_from_response(self, data: Any) -> List[Dict]:
@@ -216,25 +228,28 @@ class PelagiosIntegration:
             return data
         elif isinstance(data, dict):
             # Try common response keys
-            for key in ['items', 'results', 'places', 'features', 'hits', 'docs']:
+            for key in ['items', 'results', 'places', 'features', 'hits', 'docs', 'data']:
                 if key in data:
                     items = data[key]
-                    return items if isinstance(items, list) else [items]
+                    if isinstance(items, list):
+                        return items
+                    elif isinstance(items, dict):
+                        return [items]
             
             # If data itself looks like an item
-            if data.get('title') or data.get('name') or data.get('label'):
+            if any(key in data for key in ['title', 'name', 'label', 'uri', 'identifier']):
                 return [data]
         
         return []
     
     def _is_pleiades_source(self, item: Dict) -> bool:
         """Check if an item comes from Pleiades."""
+        item_str = str(item).lower()
         return (
             item.get('source_gazetteer') == 'pleiades' or
-            'pleiades.stoa.org' in str(item.get('identifier', '')).lower() or
-            'pleiades.stoa.org' in str(item.get('uri', '')).lower() or
-            'pleiades.stoa.org' in str(item.get('url', '')).lower() or
-            item.get('gazetteer') == 'pleiades'
+            'pleiades.stoa.org' in item_str or
+            item.get('gazetteer') == 'pleiades' or
+            'pleiades' in str(item.get('source', '')).lower()
         )
     
     def _parse_xml_response(self, xml_text: str, place_name: str) -> List[Dict]:
@@ -272,7 +287,8 @@ class PelagiosIntegration:
             
             return items
             
-        except ET.ParseError:
+        except ET.ParseError as e:
+            print(f"XML Parse error: {e}")
             return []
     
     def search_pleiades_directly(self, place_name: str) -> List[Dict]:
@@ -282,6 +298,7 @@ class PelagiosIntegration:
         print(f"Searching Pleiades directly for: '{place_name}'")
         
         try:
+            # Try the RSS search first
             params = {
                 'SearchableText': place_name,
                 'portal_type': 'Place',
@@ -336,15 +353,21 @@ class PelagiosIntegration:
                                     item_data.update(json_details)
                                 
                                 items.append(item_data)
+                                print(f"Found Pleiades item: {title} (ID: {pleiades_id})")
                 
                 except ET.ParseError as e:
                     print(f"Error parsing Pleiades RSS: {e}")
                 
                 print(f"Found {len(items)} items via direct Pleiades search")
                 return items
+            else:
+                print(f"Pleiades search failed with status: {response.status_code}")
+                print(f"Response: {response.text[:200]}...")
                 
         except requests.RequestException as e:
             print(f"Direct Pleiades search failed: {e}")
+        except Exception as e:
+            print(f"Unexpected error in Pleiades search: {e}")
         
         return []
     
@@ -352,6 +375,7 @@ class PelagiosIntegration:
         """Get detailed information from Pleiades JSON API."""
         try:
             json_url = f"{self.pleiades_base_url}/places/{pleiades_id}/json"
+            print(f"Fetching Pleiades JSON: {json_url}")
             response = self.session.get(json_url, timeout=10)
             
             if response.status_code == 200:
@@ -367,6 +391,7 @@ class PelagiosIntegration:
                             'lon': coords[0]
                         }
                     }
+                    print(f"Found coordinates: {coords[1]}, {coords[0]}")
                 
                 # Extract temporal information
                 if data.get('connectsWith') or data.get('timePeriods'):
@@ -378,6 +403,8 @@ class PelagiosIntegration:
                     details['place_types'] = [pt.get('title', '') for pt in data['placeTypes']]
                 
                 return details
+            else:
+                print(f"Failed to get Pleiades JSON: {response.status_code}")
                 
         except Exception as e:
             print(f"Error getting Pleiades JSON details for {pleiades_id}: {e}")
@@ -400,9 +427,11 @@ class PelagiosIntegration:
             if entity_type in place_types:
                 # Skip very short or common words
                 if len(entity_text) <= 2 or entity_text.lower() in ['the', 'and', 'or', 'of', 'in', 'to']:
+                    print(f"Skipping short/common word: '{entity_text}'")
                     continue
                 
                 # Try Peripleo first
+                print("Trying Peripleo search...")
                 peripleo_results = self.search_peripleo(entity_text)
                 
                 # If no results from Peripleo, try direct Pleiades search
@@ -421,7 +450,8 @@ class PelagiosIntegration:
                     ]
                     
                     for variation in variations:
-                        if variation != entity_text:
+                        if variation != entity_text and len(variation) > 2:
+                            print(f"Trying variation: '{variation}'")
                             peripleo_results = self.search_pleiades_directly(variation)
                             if peripleo_results:
                                 print(f"Found results with variation: '{variation}'")
@@ -516,7 +546,8 @@ class PelagiosIntegration:
                         return pleiades_id
         
         return None
-    
+
+    # Keep all the export methods unchanged...
     def export_to_recogito_format(self, text: str, entities: List[Dict], 
                                  title: str = "EntityLinker Export") -> str:
         """
