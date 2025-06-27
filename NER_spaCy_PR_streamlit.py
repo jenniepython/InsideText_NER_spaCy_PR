@@ -1445,7 +1445,8 @@ class StreamlitEntityLinker:
                         if entity.get('wikidata_description'):
                             st.write(f"**Description:** {entity['wikidata_description']}")
                     
-                    st.write("---")eoNames entities section
+                    st.write("---")
+        # GeoNames entities section
         geonames_entities = [e for e in entities if e.get('geonames_url') and not e.get('pelagios_data')]
         if geonames_entities:
             with st.expander(f"🌍 GeoNames Linked Places ({len(geonames_entities)}) - Priority 2", expanded=False):
