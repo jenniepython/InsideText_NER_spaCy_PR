@@ -1514,19 +1514,19 @@ class StreamlitEntityLinker:
     def render_sidebar(self):
         """Render the sidebar with enhanced information."""
         # Entity linking information
-        st.sidebar.subheader("🔗 Entity Linking")
+        st.sidebar.subheader("Entity Linking")
         st.sidebar.info("Enhanced multi-source linking: Pelagios historical places, direct Pleiades search, Wikidata, Wikipedia, and Britannica as fallbacks. Places are geocoded using multiple services with contextual awareness.")
         
         # Pelagios information
-        st.sidebar.subheader("🏛️ Pelagios Integration")
+        st.sidebar.subheader("Pelagios Integration")
         st.sidebar.info("Historical places are enhanced with data from Peripleo with direct Pleiades fallback. Includes temporal bounds, place types, and authoritative ancient world coordinates.")
         
         # Export formats
-        st.sidebar.subheader("📤 Export Formats")
+        st.sidebar.subheader("Export Formats")
         st.sidebar.info("Results exported as Recogito annotations for collaborative markup, TEI XML for digital humanities, or JSON-LD for linked data applications.")
         
         # Debugging information
-        st.sidebar.subheader("🔧 Debug Information")
+        st.sidebar.subheader("Debug Information")
         if st.sidebar.checkbox("Show debug output"):
             st.session_state.show_debug = True
         else:
@@ -1534,7 +1534,7 @@ class StreamlitEntityLinker:
 
     def render_input_section(self):
         """Render the enhanced text input section."""
-        st.header("📝 Input Text")
+        st.header("Input Text")
         
         # Add title input
         analysis_title = st.text_input(
@@ -1556,7 +1556,7 @@ class StreamlitEntityLinker:
         )
         
         # File upload option
-        with st.expander("📁 Or upload a text file"):
+        with st.expander("Or upload a text file"):
             uploaded_file = st.file_uploader(
                 "Choose a text file",
                 type=['txt', 'md'],
@@ -1567,13 +1567,13 @@ class StreamlitEntityLinker:
                 try:
                     uploaded_text = str(uploaded_file.read(), "utf-8")
                     text_input = uploaded_text
-                    st.success(f"✅ File uploaded successfully! ({len(uploaded_text)} characters)")
+                    st.success(f"File uploaded successfully! ({len(uploaded_text)} characters)")
                     if not analysis_title:
                         import os
                         default_title = os.path.splitext(uploaded_file.name)[0]
                         st.session_state.suggested_title = default_title
                 except Exception as e:
-                    st.error(f"❌ Error reading file: {e}")
+                    st.error(f"Error reading file: {e}")
         
         # Use suggested title if no title provided
         if not analysis_title and hasattr(st.session_state, 'suggested_title'):
@@ -1588,17 +1588,17 @@ class StreamlitEntityLinker:
         Enhanced text processing with improved error handling and debugging.
         """
         if not text.strip():
-            st.warning("⚠️ Please enter some text to analyze.")
+            st.warning("Please enter some text to analyze.")
             return
         
         # Check if we've already processed this exact text
         text_hash = hashlib.md5(text.encode()).hexdigest()
         
         if text_hash == st.session_state.last_processed_hash:
-            st.info("ℹ️ This text has already been processed. Results shown below.")
+            st.info("This text has already been processed. Results shown below.")
             return
         
-        with st.spinner("🔄 Processing text and extracting entities..."):
+        with st.spinner("Processing text and extracting entities..."):
             try:
                 # Create enhanced progress tracking
                 progress_bar = st.progress(0)
@@ -1609,14 +1609,14 @@ class StreamlitEntityLinker:
                     debug_text = st.empty()
                 
                 # Step 1: Extract entities (cached)
-                status_text.text("🔍 Extracting entities with enhanced spaCy...")
+                status_text.text("Extracting entities with enhanced spaCy...")
                 debug_text.text("Starting entity extraction...")
                 progress_bar.progress(10)
                 entities = self.cached_extract_entities(text)
                 debug_text.text(f"Found {len(entities)} initial entities: {[e['text'] for e in entities[:5]]}...")
                 
                 # Step 2: Enhance with Pelagios (PRIORITIZED)
-                status_text.text("🏛️ Enhancing with Pelagios historical data...")
+                status_text.text("Enhancing with Pelagios historical data...")
                 progress_bar.progress(25)
                 entities_json = json.dumps(entities, default=str)
                 enhanced_entities_json = self.cached_enhance_with_pelagios(entities_json)
@@ -1626,7 +1626,7 @@ class StreamlitEntityLinker:
                 debug_text.text(f"Pelagios enhanced {pelagios_count} entities")
                 
                 # Step 3: Link to Wikidata (cached)
-                status_text.text("🔗 Linking to Wikidata...")
+                status_text.text("Linking to Wikidata...")
                 progress_bar.progress(45)
                 entities_json = json.dumps(entities, default=str)
                 linked_entities_json = self.cached_link_to_wikidata(entities_json)
@@ -1636,7 +1636,7 @@ class StreamlitEntityLinker:
                 debug_text.text(f"Wikidata linked {wikidata_count} entities")
                 
                 # Step 4: Link to Wikipedia (cached)
-                status_text.text("📖 Linking to Wikipedia...")
+                status_text.text("Linking to Wikipedia...")
                 progress_bar.progress(60)
                 entities_json = json.dumps(entities, default=str)
                 linked_entities_json = self.cached_link_to_wikipedia(entities_json)
@@ -1646,7 +1646,7 @@ class StreamlitEntityLinker:
                 debug_text.text(f"Wikipedia linked {wikipedia_count} entities")
                 
                 # Step 5: Link to Britannica (cached)
-                status_text.text("📚 Linking to Britannica...")
+                status_text.text("Linking to Britannica...")
                 progress_bar.progress(75)
                 entities_json = json.dumps(entities, default=str)
                 linked_entities_json = self.cached_link_to_britannica(entities_json)
@@ -1656,7 +1656,7 @@ class StreamlitEntityLinker:
                 debug_text.text(f"Britannica linked {britannica_count} entities")
                 
                 # Step 6: Enhanced coordinate lookup
-                status_text.text("🌍 Getting enhanced coordinates...")
+                status_text.text("Getting enhanced coordinates...")
                 progress_bar.progress(85)
                 entities = self.entity_linker.get_coordinates(entities)
                 
@@ -1664,7 +1664,7 @@ class StreamlitEntityLinker:
                 debug_text.text(f"Geocoded {geocoded_count} places")
                 
                 # Step 7: Generate visualization
-                status_text.text("🎨 Generating enhanced visualization...")
+                status_text.text("Generating enhanced visualization...")
                 progress_bar.progress(95)
                 html_content = self.create_highlighted_html(text, entities)
                 
@@ -1687,23 +1687,23 @@ class StreamlitEntityLinker:
                     e.get('wikipedia_url'), e.get('britannica_url')
                 ])])
                 
-                st.success(f"✅ Processing complete! Found {len(entities)} entities")
+                st.success(f"Processing complete! Found {len(entities)} entities")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("🏛️ Pelagios Enhanced", pelagios_enhanced)
+                    st.metric("Pelagios Enhanced", pelagios_enhanced)
                 with col2:
-                    st.metric("🏺 Pleiades Linked", pleiades_linked)
+                    st.metric("Pleiades Linked", pleiades_linked)
                 with col3:
-                    st.metric("🔗 Total Linked", total_linked)
+                    st.metric("Total Linked", total_linked)
                 with col4:
-                    st.metric("🌍 Geocoded", geocoded_count)
+                    st.metric("Geocoded", geocoded_count)
                 
                 if pelagios_enhanced > 0:
-                    st.info(f"🎯 Successfully enhanced {pelagios_enhanced} places with historical data!")
+                    st.info(f"Successfully enhanced {pelagios_enhanced} places with historical data!")
                 
             except Exception as e:
-                st.error(f"❌ Error processing text: {e}")
+                st.error(f"Error processing text: {e}")
                 if st.session_state.get('show_debug', False):
                     st.exception(e)
 
@@ -1815,25 +1815,25 @@ class StreamlitEntityLinker:
     def render_results(self):
         """Enhanced results section with better organization."""
         if not st.session_state.entities:
-            st.info("📝 Enter some text above and click 'Process Text' to see results.")
+            st.info("Enter some text above and click 'Process Text' to see results.")
             return
         
         entities = st.session_state.entities
         
-        st.header("📊 Results")
+        st.header("Results")
         
         # Enhanced statistics
         self.render_enhanced_statistics(entities)
         
         # Highlighted text with improved legend
-        st.subheader("🎨 Highlighted Text")
+        st.subheader("Highlighted Text")
         
         # Enhanced legend with icons
         st.markdown("""
         **Visual Legend:**
-        - 🏺 **Pleiades entities** (brown border) - Ancient world gazetteer
-        - 🏛️ **Peripleo entities** (orange border) - Historical geography
-        - 🔗 **Other linked entities** (colored background) - General knowledge bases
+        - **Pleiades entities** (brown) - Ancient world gazetteer
+        - **Peripleo entities** (orange) - Historical geography
+        - **Other linked entities** (other colour) - General knowledge bases
         """)
         
         if st.session_state.html_content:
@@ -1869,14 +1869,14 @@ class StreamlitEntityLinker:
         # Enhanced Pelagios section
         pelagios_entities = [e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')]
         if pelagios_entities:
-            with st.expander(f"🏛️ Pelagios & Pleiades Enhanced Places ({len(pelagios_entities)})", expanded=True):
+            with st.expander(f"Pelagios & Pleiades Enhanced Places ({len(pelagios_entities)})", expanded=True):
                 for entity in pelagios_entities:
                     self.render_pelagios_entity_card(entity)
         
         # Maps section with enhanced features
         geo_entities = [e for e in entities if e.get('latitude') and e.get('longitude')]
         if geo_entities:
-            st.subheader("🗺️ Geographic Visualization")
+            st.subheader("Geographic Visualization")
             
             # Enhanced map
             self.render_enhanced_map(geo_entities)
@@ -1884,13 +1884,13 @@ class StreamlitEntityLinker:
             # Peripleo map link
             if pelagios_entities:
                 map_url = self.pelagios.create_pelagios_map_url(entities)
-                st.markdown(f"🌍 [**View all places on Peripleo Interactive Map**]({map_url})")
+                st.markdown(f"[**View all places on Peripleo Interactive Map**]({map_url})")
         
         # Collapsible sections for mobile
-        with st.expander("📋 Entity Details Table", expanded=False):
+        with st.expander("Entity Details Table", expanded=False):
             self.render_enhanced_entity_table(entities)
         
-        with st.expander("📤 Export Results", expanded=False):
+        with st.expander("Export Results", expanded=False):
             self.render_enhanced_export_section(entities)
 
     def render_enhanced_statistics(self, entities: List[Dict[str, Any]]):
@@ -1899,24 +1899,24 @@ class StreamlitEntityLinker:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("📊 Total Entities", len(entities))
+            st.metric("Total Entities", len(entities))
         
         with col2:
             pelagios_count = len([e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')])
-            st.metric("🏛️ Pelagios Enhanced", pelagios_count)
+            st.metric("Pelagios Enhanced", pelagios_count)
         
         with col3:
             geocoded_count = len([e for e in entities if e.get('latitude')])
-            st.metric("🌍 Geocoded", geocoded_count)
+            st.metric("Geocoded", geocoded_count)
         
         with col4:
             linked_count = len([e for e in entities if any([
                 e.get('wikidata_url'), e.get('wikipedia_url'), e.get('britannica_url')
             ])])
-            st.metric("🔗 Linked", linked_count)
+            st.metric("Linked", linked_count)
         
         # Detailed breakdown
-        with st.expander("📈 Detailed Statistics"):
+        with st.expander("Detailed Statistics"):
             col1, col2 = st.columns(2)
             
             with col1:
@@ -1936,10 +1936,10 @@ class StreamlitEntityLinker:
                 wikipedia_count = len([e for e in entities if e.get('wikipedia_url')])
                 britannica_count = len([e for e in entities if e.get('britannica_url')])
                 
-                st.write(f"**🏺 Pleiades:** {pleiades_count}")
-                st.write(f"**🔗 Wikidata:** {wikidata_count}")
-                st.write(f"**📖 Wikipedia:** {wikipedia_count}")
-                st.write(f"**📚 Britannica:** {britannica_count}")
+                st.write(f"**Pleiades:** {pleiades_count}")
+                st.write(f"**Wikidata:** {wikidata_count}")
+                st.write(f"**Wikipedia:** {wikipedia_count}")
+                st.write(f"**Britannica:** {britannica_count}")
 
     def render_pelagios_entity_card(self, entity: Dict):
         """Render an enhanced card for Pelagios entities."""
@@ -1951,13 +1951,13 @@ class StreamlitEntityLinker:
             
             # Links with icons
             if entity.get('pleiades_url'):
-                st.markdown(f"🏺 [Pleiades]({entity['pleiades_url']})")
+                st.markdown(f"[Pleiades]({entity['pleiades_url']})")
             
             if entity.get('pelagios_data', {}).get('peripleo_url'):
-                st.markdown(f"🏛️ [Peripleo]({entity['pelagios_data']['peripleo_url']})")
+                st.markdown(f"[Peripleo]({entity['pelagios_data']['peripleo_url']})")
             
             if entity.get('coordinates'):
-                st.write(f"📍 **Coordinates:** {entity.get('latitude', 'N/A'):.4f}, {entity.get('longitude', 'N/A'):.4f}")
+                st.write(f"**Coordinates:** {entity.get('latitude', 'N/A'):.4f}, {entity.get('longitude', 'N/A'):.4f}")
         
         with col2:
             pelagios_data = entity.get('pelagios_data', {})
@@ -1967,13 +1967,13 @@ class StreamlitEntityLinker:
                 st.write(pelagios_data['peripleo_description'])
             
             if pelagios_data.get('temporal_bounds'):
-                st.write(f"**📅 Time Period:** {pelagios_data['temporal_bounds']}")
+                st.write(f"**Time Period:** {pelagios_data['temporal_bounds']}")
             
             if pelagios_data.get('place_types'):
-                st.write(f"**🏷️ Place Types:** {', '.join(pelagios_data['place_types'])}")
+                st.write(f"**Place Types:** {', '.join(pelagios_data['place_types'])}")
             
             if entity.get('geocoding_source'):
-                st.write(f"**🌍 Geocoding Source:** {entity['geocoding_source']}")
+                st.write(f"**Geocoding Source:** {entity['geocoding_source']}")
         
         st.markdown("---")
 
@@ -2059,7 +2059,7 @@ class StreamlitEntityLinker:
             size_max=15,
             zoom=2,
             height=600,
-            title="🗺️ Geographic Distribution of Historical and Modern Places"
+            title="Geographic Distribution of Historical and Modern Places"
         )
         
         fig.update_layout(
@@ -2082,8 +2082,8 @@ class StreamlitEntityLinker:
             row = {
                 'Entity': entity['text'],
                 'Type': entity['type'],
-                'Pelagios': '🏛️' if entity.get('pelagios_data') else '',
-                'Pleiades': '🏺' if entity.get('pleiades_id') else '',
+                'Pelagios' if entity.get('pelagios_data') else '',
+                'Pleiades' if entity.get('pleiades_id') else '',
                 'Links': self.format_enhanced_entity_links(entity),
                 'Coordinates': f"{entity['latitude']:.4f}, {entity['longitude']:.4f}" if entity.get('latitude') else '',
                 'Source': entity.get('geocoding_source', '')
@@ -2114,15 +2114,15 @@ class StreamlitEntityLinker:
             df,
             use_container_width=True,
             column_config={
-                "Entity": st.column_config.TextColumn("🏷️ Entity", width="medium"),
-                "Type": st.column_config.TextColumn("📂 Type", width="small"),
-                "Pelagios": st.column_config.TextColumn("🏛️", width="small"),
-                "Pleiades": st.column_config.TextColumn("🏺", width="small"),
-                "Links": st.column_config.TextColumn("🔗 Links", width="medium"),
-                "Coordinates": st.column_config.TextColumn("📍 Coordinates", width="medium"),
-                "Source": st.column_config.TextColumn("🌍 Geo Source", width="small"),
-                "Description": st.column_config.TextColumn("📝 Description", width="large"),
-                "Period": st.column_config.TextColumn("📅 Period", width="medium")
+                "Entity": st.column_config.TextColumn("Entity", width="medium"),
+                "Type": st.column_config.TextColumn("Type", width="small"),
+                "Pelagios": st.column_config.TextColumn("Pelagios", width="small"),
+                "Pleiades": st.column_config.TextColumn("Pleiades", width="small"),
+                "Links": st.column_config.TextColumn("Links", width="medium"),
+                "Coordinates": st.column_config.TextColumn("Coordinates", width="medium"),
+                "Source": st.column_config.TextColumn("Geo Source", width="small"),
+                "Description": st.column_config.TextColumn("Description", width="large"),
+                "Period": st.column_config.TextColumn("Period", width="medium")
             }
         )
 
@@ -2130,20 +2130,20 @@ class StreamlitEntityLinker:
         """Enhanced link formatting with icons."""
         links = []
         if entity.get('pleiades_url'):
-            links.append("🏺 Pleiades")
+            links.append("Pleiades")
         if entity.get('pelagios_data', {}).get('peripleo_url'):
-            links.append("🏛️ Peripleo")
+            links.append("Peripleo")
         if entity.get('wikipedia_url'):
-            links.append("📖 Wikipedia")
+            links.append("Wikipedia")
         if entity.get('wikidata_url'):
-            links.append("🔗 Wikidata")
+            links.append("Wikidata")
         if entity.get('britannica_url'):
-            links.append("📚 Britannica")
+            links.append("Britannica")
         return " | ".join(links) if links else "No links"
 
     def render_enhanced_export_section(self, entities: List[Dict[str, Any]]):
         """Enhanced export section with better organization."""
-        st.subheader("🏛️ Pelagios Integration Exports")
+        st.subheader("Pelagios Integration Exports")
         st.markdown("*Specialized formats for digital humanities and historical research*")
         
         # Pelagios-specific exports
@@ -2157,7 +2157,7 @@ class StreamlitEntityLinker:
                 st.session_state.analysis_title
             )
             st.download_button(
-                label="📝 Download for Recogito",
+                label="Download for Recogito",
                 data=recogito_json,
                 file_name=f"{st.session_state.analysis_title}_recogito.json",
                 mime="application/json",
@@ -2173,7 +2173,7 @@ class StreamlitEntityLinker:
                 st.session_state.analysis_title
             )
             st.download_button(
-                label="📜 Download TEI XML",
+                label="Download TEI XML",
                 data=tei_xml,
                 file_name=f"{st.session_state.analysis_title}_tei.xml",
                 mime="application/xml",
@@ -2187,7 +2187,7 @@ class StreamlitEntityLinker:
             json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
             
             st.download_button(
-                label="🔗 Download JSON-LD",
+                label="Download JSON-LD",
                 data=json_str,
                 file_name=f"{st.session_state.analysis_title}_entities.jsonld",
                 mime="application/ld+json",
@@ -2196,7 +2196,7 @@ class StreamlitEntityLinker:
             )
         
         # Standard exports
-        st.subheader("📊 Standard Exports")
+        st.subheader("Standard Exports")
         st.markdown("*General-purpose formats for analysis and sharing*")
         
         col1, col2, col3 = st.columns(3)
@@ -2207,7 +2207,7 @@ class StreamlitEntityLinker:
                 html_template = self.create_enhanced_html_export(entities)
                 
                 st.download_button(
-                    label="🌐 Download HTML",
+                    label="Download HTML",
                     data=html_template,
                     file_name=f"{st.session_state.analysis_title}_entities.html",
                     mime="text/html",
@@ -2220,7 +2220,7 @@ class StreamlitEntityLinker:
             csv_data = self.create_enhanced_csv_export(entities)
             
             st.download_button(
-                label="📊 Download CSV",
+                label="Download CSV",
                 data=csv_data,
                 file_name=f"{st.session_state.analysis_title}_entities.csv",
                 mime="text/csv",
@@ -2233,7 +2233,7 @@ class StreamlitEntityLinker:
             summary_report = self.create_summary_report(entities)
             
             st.download_button(
-                label="📋 Download Summary",
+                label="Download Summary",
                 data=summary_report,
                 file_name=f"{st.session_state.analysis_title}_summary.txt",
                 mime="text/plain",
@@ -2428,8 +2428,8 @@ class StreamlitEntityLinker:
         </head>
         <body>
             <div class="header">
-                <h1>🏛️ Entity Analysis: {st.session_state.analysis_title}</h1>
-                <p>📅 Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} using EntityLinker v2.1 with Pelagios Integration</p>
+                <h1>Entity Analysis: {st.session_state.analysis_title}</h1>
+                <p>Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} using EntityLinker v2.1 with Pelagios Integration</p>
             </div>
             
             <div class="statistics">
@@ -2439,23 +2439,23 @@ class StreamlitEntityLinker:
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">{pelagios_enhanced}</div>
-                    <div>🏛️ Pelagios Enhanced</div>
+                    <div>Pelagios Enhanced</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">{geocoded}</div>
-                    <div>🌍 Geocoded Places</div>
+                    <div>Geocoded Places</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">{linked}</div>
-                    <div>🔗 Linked Entities</div>
+                    <div>Linked Entities</div>
                 </div>
             </div>
             
             <div class="legend">
-                <h3>🎨 Visual Legend</h3>
-                <p><strong>🏺 Pleiades entities</strong> (brown border) - Ancient world gazetteer</p>
-                <p><strong>🏛️ Peripleo entities</strong> (orange border) - Historical geography</p>
-                <p><strong>🔗 Other linked entities</strong> (colored background) - General knowledge bases</p>
+                <h3>Visual Legend</h3>
+                <p><strong>Pleiades entities</strong> (brown border) - Ancient world gazetteer</p>
+                <p><strong>Peripleo entities</strong> (orange border) - Historical geography</p>
+                <p><strong>Other linked entities</strong> (colored background) - General knowledge bases</p>
             </div>
             
             <div class="content">
@@ -2574,14 +2574,14 @@ PELAGIOS & PLEIADES ENHANCED PLACES
             for entity in pelagios_entities[:10]:  # Top 10
                 report += f"\n{entity['text']} ({entity['type']})\n"
                 if entity.get('pleiades_id'):
-                    report += f"  🏺 Pleiades ID: {entity['pleiades_id']}\n"
+                    report += f"  Pleiades ID: {entity['pleiades_id']}\n"
                 if entity.get('pelagios_data', {}).get('temporal_bounds'):
-                    report += f"  📅 Period: {entity['pelagios_data']['temporal_bounds']}\n"
+                    report += f"  Period: {entity['pelagios_data']['temporal_bounds']}\n"
                 if entity.get('latitude'):
-                    report += f"  📍 Coordinates: {entity['latitude']:.4f}, {entity['longitude']:.4f}\n"
+                    report += f"  Coordinates: {entity['latitude']:.4f}, {entity['longitude']:.4f}\n"
                 if entity.get('pelagios_data', {}).get('peripleo_description'):
                     desc = entity['pelagios_data']['peripleo_description'][:100] + "..."
-                    report += f"  📝 Description: {desc}\n"
+                    report += f"  Description: {desc}\n"
         
         report += f"""
 
@@ -2684,11 +2684,11 @@ For more information, visit: https://github.com/your-repo/entity-linker
         text_input, analysis_title = self.render_input_section()
         
         # Enhanced process button
-        if st.button("🚀 Process Text with Enhanced Pelagios Integration", type="primary", use_container_width=True):
+        if st.button("Process Text with Enhanced Pelagios Integration", type="primary", use_container_width=True):
             if text_input.strip():
                 self.process_text(text_input, analysis_title)
             else:
-                st.warning("⚠️ Please enter some text to analyze.")
+                st.warning("Please enter some text to analyze.")
         
         # Add separator
         st.markdown("---")
