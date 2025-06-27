@@ -2085,7 +2085,10 @@ class StreamlitEntityLinker:
                 'Pelagios': '✅' if entity.get('pelagios_data') else '',
                 'Pleiades': '✅' if entity.get('pleiades_id') else '',
                 'Links': self.format_enhanced_entity_links(entity),
-                'Coordinates': f"{entity['latitude']:.4f}, {entity['longitude']:.4f}" if entity.get('latitude') else '',
+                'Coordinates': (
+                    f"{entity.get('latitude'):.4f}, {entity.get('longitude'):.4f}"
+                    if entity.get('latitude') is not None and entity.get('longitude') is not None else ''
+                ),
                 'Source': entity.get('geocoding_source', '')
             }
             
