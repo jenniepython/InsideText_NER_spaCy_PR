@@ -1,30 +1,4 @@
-# Pelagios enhanced entities section
-        pelagios_entities = [e for e in entities if e.get('pelagios_data')]
-        if pelagios_entities:
-            with st.expander(f"Pelagios Enhanced Places ({len(pelagios_entities)}) - Priority 1", expanded=True):
-                for entity in pelagios_entities:
-                    col1, col2 = st.columns([2, 3])
-                    
-                    with col1:
-                        st.write(f"**{entity['text']}**")
-                        if entity.get('pleiades_url'):
-                            st.markdown(f"[Pleiades]({entity['pleiades_url']})")
-                        if entity.get('pelagios_data', {}).get('peripleo_url'):
-                            st.markdown(f"[Peripleo]({entity['pelagios_data']['peripleo_url']})")
-                    
-                    with col2:
-                        pelagios_data = entity['pelagios_data']
-                        if pelagios_data.get('description') or pelagios_data.get('peripleo_description'):
-                            desc = pelagios_data.get('description') or pelagios_data.get('peripleo_description')
-                            st.write(desc)
-                        if pelagios_data.get('temporal_bounds'):
-                            st.write(f"**Period:** {pelagios_data['temporal_bounds']}")
-                        if pelagios_data.get('place_types'):
-                            st.write(f"**Types:** {', '.join(pelagios_data['place_types'])}")
-                    
-                    st.write("---")
-        
-        # G#!/usr/bin/env python3
+# G#!/usr/bin/env python3
 """
 Streamlit Entity Linker Application with Enhanced Pelagios Integration
 
