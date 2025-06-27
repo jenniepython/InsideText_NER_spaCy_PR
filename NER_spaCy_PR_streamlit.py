@@ -32,7 +32,7 @@ def _load_spacy_model(self):
             st.code("python -m spacy download en_core_web_sm")
             st.stop()
 
-    def extract_entities(self, text: str):
+def extract_entities(self, text: str):
         """Extract named entities from text using spaCy with improved validation."""
         # Process text with spaCy
         doc = self.nlp(text)
@@ -72,7 +72,7 @@ def _load_spacy_model(self):
         
         return entities
 
-    def _map_spacy_entity_type(self, spacy_label: str) -> str:
+def _map_spacy_entity_type(self, spacy_label: str) -> str:
         """Map spaCy entity labels to our standardized types."""
         mapping = {
             'PERSON': 'PERSON',
@@ -88,7 +88,7 @@ def _load_spacy_model(self):
         }
         return mapping.get(spacy_label, spacy_label)
 
-    def _is_valid_entity(self, entity_text: str, entity_type: str, spacy_ent) -> bool:
+def _is_valid_entity(self, entity_text: str, entity_type: str, spacy_ent) -> bool:
         """Enhanced entity validation using spaCy's linguistic features."""
         # Skip very short entities
         if len(entity_text.strip()) <= 1:
@@ -125,7 +125,7 @@ def _load_spacy_model(self):
         
         return True
 
-    def _extract_addresses(self, text: str):
+def _extract_addresses(self, text: str):
         """Extract address patterns that NER might miss."""
         import re
         addresses = []
@@ -148,7 +148,7 @@ def _load_spacy_model(self):
         
         return addresses
 
-    def _remove_overlapping_entities(self, entities):
+def _remove_overlapping_entities(self, entities):
         """Remove overlapping entities, keeping the longest and highest confidence ones."""
         entities.sort(key=lambda x: (x['start'], -len(x['text']), -x.get('confidence', 1.0)))
         
@@ -175,7 +175,7 @@ def _load_spacy_model(self):
         
         return filtered
 
-    def get_coordinates(self, entities):
+def get_coordinates(self, entities):
         """Enhanced coordinate lookup with geographical context detection."""
         import requests
         import time
@@ -211,7 +211,7 @@ def _load_spacy_model(self):
         
         return entities
     
-    def _detect_geographical_context(self, text: str, entities: List[Dict[str, Any]]) -> List[str]:
+def _detect_geographical_context(self, text: str, entities: List[Dict[str, Any]]) -> List[str]:
         """Enhanced geographical context detection."""
         import re
         
@@ -270,7 +270,7 @@ def _load_spacy_model(self):
         
         return context_clues[:5]  # Return top 5 context clues
 
-    def _try_contextual_geocoding(self, entity, context_clues):
+def _try_contextual_geocoding(self, entity, context_clues):
         """Enhanced contextual geocoding with historical awareness."""
         import requests
         import time
@@ -347,7 +347,7 @@ def _load_spacy_model(self):
         
         return False
     
-    def _try_python_geocoding(self, entity):
+def _try_python_geocoding(self, entity):
         """Enhanced Python geocoding with multiple services."""
         try:
             from geopy.geocoders import Nominatim, ArcGIS
@@ -381,7 +381,7 @@ def _load_spacy_model(self):
         
         return False
     
-    def _try_openstreetmap(self, entity):
+def _try_openstreetmap(self, entity):
         """Enhanced OpenStreetMap geocoding with better error handling."""
         try:
             url = "https://nominatim.openstreetmap.org/search"
@@ -415,7 +415,7 @@ def _load_spacy_model(self):
         
         return False
     
-    def _try_aggressive_geocoding(self, entity):
+def _try_aggressive_geocoding(self, entity):
         """Enhanced aggressive geocoding with more search strategies."""
         import requests
         import time
@@ -466,7 +466,7 @@ def _load_spacy_model(self):
         
         return False
 
-    def link_to_wikidata(self, entities):
+def link_to_wikidata(self, entities):
         """Enhanced Wikidata linking with better search strategies."""
         import requests
         import time
@@ -519,7 +519,7 @@ def _load_spacy_model(self):
         
         return entities
 
-    def link_to_wikipedia(self, entities):
+def link_to_wikipedia(self, entities):
         """Enhanced Wikipedia linking with better search and disambiguation."""
         import requests
         import time
@@ -590,7 +590,7 @@ def _load_spacy_model(self):
         
         return entities
 
-    def link_to_britannica(self, entities):
+def link_to_britannica(self, entities):
         """Enhanced Britannica linking with better search patterns.""" 
         import requests
         import re
