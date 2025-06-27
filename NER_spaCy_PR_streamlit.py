@@ -808,7 +808,7 @@ class EntityLinker:
                     'start': ent.start_char,
                     'end': ent.end_char,
                     'label': ent.label_,  # Keep original spaCy label
-                    'confidence': ent._.get('confidence', 1.0) if hasattr(ent, '_') else 1.0
+                    'confidence': ent.get('confidence', 1.0) if hasattr(ent, '_') else 1.0
                 })
         
         # Step 2: Extract addresses
