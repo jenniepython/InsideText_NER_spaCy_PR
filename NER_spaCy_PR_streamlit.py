@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Streamlit Entity Linker Application with Pelagios Integration
+Streamlit Entity Linker Application with Fixed Pelagios Integration
 
 A web interface for Named Entity Recognition using spaCy with enhanced
 linking to Pelagios network services including Peripleo, Pleiades, and 
 Recogito-compatible exports.
 
 Author: EntityLinker Team
-Version: 2.0 - Enhanced with Pelagios Integration
+Version: 2.1 - Fixed Pelagios Integration
 """
 
 import streamlit as st
@@ -126,107 +126,402 @@ import hashlib
 
 
 class PelagiosIntegration:
-    """Integration class for Pelagios services."""
+    """Fixed and improved integration class for Pelagios services."""
     
     def __init__(self):
-        """Initialize Pelagios integration."""
-        self.peripleo_base_url = "https://peripleo.pelagios.org/api"
+        """Initialize Pelagios integration with updated endpoints."""
+        # Updated endpoints based on current Pelagios infrastructure
+        self.peripleo_search_url = "https://peripleo.pelagios.org/api/search"
         self.pleiades_base_url = "https://pleiades.stoa.org"
+        self.pleiades_search_url = "https://pleiades.stoa.org/search_rss"
+        
+        # Session for connection pooling
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'EntityLinker-Pelagios/2.1 (Academic Research)',
+            'Accept': 'application/json, application/xml, text/xml, */*'
+        })
         
     def search_peripleo(self, place_name: str, limit: int = 5) -> List[Dict]:
         """
-        Search Peripleo for historical place information.
-        
-        Args:
-            place_name: Name of place to search
-            limit: Maximum number of results
-            
-        Returns:
-            List of place records from Peripleo
+        Search Peripleo for historical place information with multiple fallback strategies.
         """
-        try:
-            url = f"{self.peripleo_base_url}/search"
-            params = {
-                'q': place_name,
-                'limit': limit,
-                'type': 'place'
-            }
-            headers = {'User-Agent': 'EntityLinker-Pelagios/2.0'}
+        print(f"Searching Peripleo for: '{place_name}'")
+        
+        # Try multiple search strategies
+        search_variants = [
+            place_name,
+            f"{place_name} ancient",
+            place_name.replace(' ', '+')  # URL encoding variant
+        ]
+        
+        for variant in search_variants:
+            # Try different parameter combinations that Peripleo might accept
+            param_sets = [
+                {'q': variant, 'limit': limit, 'type': 'place'},
+                {'query': variant, 'limit': limit, 'format': 'json'},
+                {'search': variant, 'size': limit},
+                {'text': variant, 'limit': limit}
+            ]
             
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                return data.get('items', [])
-            
-        except Exception as e:
-            print(f"Peripleo search failed for {place_name}: {e}")
-            return []
+            for params in param_sets:
+                try:
+                    response = self.session.get(
+                        self.peripleo_search_url,
+                        params=params,
+                        timeout=15
+                    )
+                    
+                    print(f"Peripleo request: {response.url}")
+                    print(f"Status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                            print(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                            
+                            # Handle different response structures
+                            items = self._extract_items_from_response(data)
+                            
+                            if items:
+                                print(f"Found {len(items)} items via Peripleo")
+                                # Prioritize Pleiades sources
+                                pleiades_items = [item for item in items 
+                                                if self._is_pleiades_source(item)]
+                                
+                                if pleiades_items:
+                                    print(f"Found {len(pleiades_items)} Pleiades items")
+                                    return pleiades_items
+                                return items[:limit]
+                                
+                        except json.JSONDecodeError as e:
+                            print(f"JSON decode error: {e}")
+                            # Try as XML/RSS
+                            try:
+                                return self._parse_xml_response(response.text, place_name)
+                            except:
+                                pass
+                                
+                except requests.RequestException as e:
+                    print(f"Peripleo request failed: {e}")
+                    continue
+                
+                time.sleep(0.3)  # Rate limiting between attempts
         
         return []
     
+    def _extract_items_from_response(self, data: Any) -> List[Dict]:
+        """Extract items from various possible response structures."""
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            # Try common response keys
+            for key in ['items', 'results', 'places', 'features', 'hits', 'docs']:
+                if key in data:
+                    items = data[key]
+                    return items if isinstance(items, list) else [items]
+            
+            # If data itself looks like an item
+            if data.get('title') or data.get('name') or data.get('label'):
+                return [data]
+        
+        return []
+    
+    def _is_pleiades_source(self, item: Dict) -> bool:
+        """Check if an item comes from Pleiades."""
+        return (
+            item.get('source_gazetteer') == 'pleiades' or
+            'pleiades.stoa.org' in str(item.get('identifier', '')).lower() or
+            'pleiades.stoa.org' in str(item.get('uri', '')).lower() or
+            'pleiades.stoa.org' in str(item.get('url', '')).lower() or
+            item.get('gazetteer') == 'pleiades'
+        )
+    
+    def _parse_xml_response(self, xml_text: str, place_name: str) -> List[Dict]:
+        """Parse XML/RSS response as fallback."""
+        try:
+            root = ET.fromstring(xml_text)
+            items = []
+            
+            # Handle RSS format
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                link_elem = item.find('link')
+                desc_elem = item.find('description')
+                
+                if title_elem is not None and link_elem is not None:
+                    title = title_elem.text
+                    link = link_elem.text
+                    
+                    # Check if this is relevant to our search
+                    if place_name.lower() in title.lower():
+                        parsed_item = {
+                            'title': title,
+                            'identifier': link,
+                            'description': desc_elem.text if desc_elem is not None else '',
+                            'source_gazetteer': 'unknown'
+                        }
+                        
+                        # Check if it's from Pleiades
+                        if 'pleiades.stoa.org' in link:
+                            parsed_item['source_gazetteer'] = 'pleiades'
+                            if '/places/' in link:
+                                parsed_item['source_id'] = link.split('/places/')[-1].rstrip('/')
+                        
+                        items.append(parsed_item)
+            
+            return items
+            
+        except ET.ParseError:
+            return []
+    
+    def search_pleiades_directly(self, place_name: str) -> List[Dict]:
+        """
+        Direct search of Pleiades gazetteer as primary fallback.
+        """
+        print(f"Searching Pleiades directly for: '{place_name}'")
+        
+        try:
+            params = {
+                'SearchableText': place_name,
+                'portal_type': 'Place',
+                'review_state': 'published'  # Only published places
+            }
+            
+            response = self.session.get(
+                self.pleiades_search_url,
+                params=params,
+                timeout=15
+            )
+            
+            print(f"Pleiades request: {response.url}")
+            print(f"Status: {response.status_code}")
+            
+            if response.status_code == 200:
+                items = []
+                
+                try:
+                    # Parse RSS/XML response
+                    root = ET.fromstring(response.text)
+                    
+                    for item in root.findall('.//item'):
+                        title_elem = item.find('title')
+                        link_elem = item.find('link')
+                        desc_elem = item.find('description')
+                        
+                        if title_elem is not None and link_elem is not None:
+                            title = title_elem.text.strip()
+                            link = link_elem.text.strip()
+                            description = desc_elem.text.strip() if desc_elem is not None else ''
+                            
+                            # Extract Pleiades ID
+                            pleiades_id = None
+                            if '/places/' in link:
+                                pleiades_id = link.split('/places/')[-1].rstrip('/')
+                            
+                            if pleiades_id:
+                                # Get additional details from JSON API
+                                item_data = {
+                                    'title': title,
+                                    'identifier': link,
+                                    'description': description,
+                                    'source_gazetteer': 'pleiades',
+                                    'source_id': pleiades_id,
+                                    'pleiades_url': link
+                                }
+                                
+                                # Try to get JSON details for coordinates
+                                json_details = self._get_pleiades_json_details(pleiades_id)
+                                if json_details:
+                                    item_data.update(json_details)
+                                
+                                items.append(item_data)
+                
+                except ET.ParseError as e:
+                    print(f"Error parsing Pleiades RSS: {e}")
+                
+                print(f"Found {len(items)} items via direct Pleiades search")
+                return items
+                
+        except requests.RequestException as e:
+            print(f"Direct Pleiades search failed: {e}")
+        
+        return []
+    
+    def _get_pleiades_json_details(self, pleiades_id: str) -> Optional[Dict]:
+        """Get detailed information from Pleiades JSON API."""
+        try:
+            json_url = f"{self.pleiades_base_url}/places/{pleiades_id}/json"
+            response = self.session.get(json_url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                details = {}
+                
+                # Extract coordinates
+                if data.get('reprPoint'):
+                    coords = data['reprPoint']
+                    details['geo_bounds'] = {
+                        'centroid': {
+                            'lat': coords[1],  # reprPoint is [lon, lat]
+                            'lon': coords[0]
+                        }
+                    }
+                
+                # Extract temporal information
+                if data.get('connectsWith') or data.get('timePeriods'):
+                    # This would need more complex parsing for actual temporal bounds
+                    details['temporal_bounds'] = 'Ancient period'
+                
+                # Extract place types
+                if data.get('placeTypes'):
+                    details['place_types'] = [pt.get('title', '') for pt in data['placeTypes']]
+                
+                return details
+                
+        except Exception as e:
+            print(f"Error getting Pleiades JSON details for {pleiades_id}: {e}")
+        
+        return None
+    
     def enhance_entities_with_pelagios(self, entities: List[Dict]) -> List[Dict]:
         """
-        Enhance place entities with Pelagios data.
-        
-        Args:
-            entities: List of extracted entities
-            
-        Returns:
-            Enhanced entities with Pelagios links
+        Enhanced entity enrichment with improved search and fallbacks.
         """
-        place_types = ['GPE', 'LOCATION', 'FACILITY']
+        # Expanded place types to catch more entities
+        place_types = ['GPE', 'LOCATION', 'FACILITY', 'ORG', 'PERSON', 'NORP']
         
         for entity in entities:
-            if entity['type'] in place_types:
-                # Search Peripleo for this place
-                peripleo_results = self.search_peripleo(entity['text'])
+            entity_text = entity['text'].strip()
+            entity_type = entity['type']
+            
+            print(f"\n=== Processing entity: '{entity_text}' (type: {entity_type}) ===")
+            
+            if entity_type in place_types:
+                # Skip very short or common words
+                if len(entity_text) <= 2 or entity_text.lower() in ['the', 'and', 'or', 'of', 'in', 'to']:
+                    continue
+                
+                # Try Peripleo first
+                peripleo_results = self.search_peripleo(entity_text)
+                
+                # If no results from Peripleo, try direct Pleiades search
+                if not peripleo_results:
+                    print("No Peripleo results, trying direct Pleiades search...")
+                    peripleo_results = self.search_pleiades_directly(entity_text)
+                
+                # If still no results, try with variations
+                if not peripleo_results and len(entity_text) > 3:
+                    print("Trying search variations...")
+                    variations = [
+                        f"{entity_text} city",
+                        f"{entity_text} ancient",
+                        entity_text.replace('the ', '').strip(),
+                        entity_text.split()[0] if ' ' in entity_text else entity_text  # First word only
+                    ]
+                    
+                    for variation in variations:
+                        if variation != entity_text:
+                            peripleo_results = self.search_pleiades_directly(variation)
+                            if peripleo_results:
+                                print(f"Found results with variation: '{variation}'")
+                                break
                 
                 if peripleo_results:
-                    best_match = peripleo_results[0]  # Take first result
+                    best_match = peripleo_results[0]
+                    print(f"✓ Found match: {best_match.get('title', 'No title')}")
                     
-                    # Add Pelagios data to entity
+                    # Enhanced data extraction
                     entity['pelagios_data'] = {
                         'peripleo_id': best_match.get('identifier'),
                         'peripleo_title': best_match.get('title'),
                         'peripleo_description': best_match.get('description'),
                         'temporal_bounds': best_match.get('temporal_bounds'),
                         'place_types': best_match.get('place_types', []),
-                        'peripleo_url': f"https://peripleo.pelagios.org/ui#selected={best_match.get('identifier')}"
+                        'peripleo_url': best_match.get('identifier')
                     }
                     
-                    # Extract coordinates if available
-                    if best_match.get('geo_bounds'):
-                        bounds = best_match['geo_bounds']
-                        if 'centroid' in bounds:
-                            entity['latitude'] = bounds['centroid']['lat']
-                            entity['longitude'] = bounds['centroid']['lon']
-                            entity['geocoding_source'] = 'pelagios_peripleo'
+                    # Extract coordinates with multiple fallback strategies
+                    self._extract_coordinates(entity, best_match)
                     
-                    # Add Pleiades ID if available
-                    if best_match.get('source_gazetteer') == 'pleiades':
-                        pleiades_id = best_match.get('source_id')
-                        if pleiades_id:
-                            entity['pleiades_id'] = pleiades_id
-                            entity['pleiades_url'] = f"{self.pleiades_base_url}/places/{pleiades_id}"
+                    # Enhanced Pleiades ID extraction
+                    pleiades_id = self._extract_pleiades_id(best_match)
+                    if pleiades_id:
+                        entity['pleiades_id'] = pleiades_id
+                        entity['pleiades_url'] = f"{self.pleiades_base_url}/places/{pleiades_id}"
+                        print(f"✓ Added Pleiades link: {entity['pleiades_url']}")
+                else:
+                    print(f"✗ No results found for '{entity_text}'")
                 
-                time.sleep(0.2)  # Rate limiting
+                time.sleep(0.5)  # Rate limiting
         
         return entities
+    
+    def _extract_coordinates(self, entity: Dict, match_data: Dict):
+        """Extract coordinates from various possible data structures."""
+        coords_found = False
+        
+        # Try multiple possible coordinate sources
+        for geo_key in ['geo_bounds', 'geometry', 'coordinates', 'location', 'spatial']:
+            geo_data = match_data.get(geo_key)
+            if not geo_data:
+                continue
+                
+            # Handle centroid format
+            if isinstance(geo_data, dict) and geo_data.get('centroid'):
+                centroid = geo_data['centroid']
+                if isinstance(centroid, dict) and 'lat' in centroid and 'lon' in centroid:
+                    entity['latitude'] = float(centroid['lat'])
+                    entity['longitude'] = float(centroid['lon'])
+                    coords_found = True
+                    break
+            
+            # Handle GeoJSON coordinates [lon, lat]
+            elif isinstance(geo_data, dict) and geo_data.get('coordinates'):
+                coords = geo_data['coordinates']
+                if isinstance(coords, list) and len(coords) >= 2:
+                    entity['longitude'] = float(coords[0])
+                    entity['latitude'] = float(coords[1])
+                    coords_found = True
+                    break
+            
+            # Handle direct coordinate arrays
+            elif isinstance(geo_data, list) and len(geo_data) >= 2:
+                try:
+                    entity['longitude'] = float(geo_data[0])
+                    entity['latitude'] = float(geo_data[1])
+                    coords_found = True
+                    break
+                except (ValueError, TypeError):
+                    continue
+        
+        if coords_found:
+            entity['geocoding_source'] = 'pelagios_peripleo'
+            print(f"✓ Added coordinates: {entity['latitude']}, {entity['longitude']}")
+    
+    def _extract_pleiades_id(self, match_data: Dict) -> Optional[str]:
+        """Extract Pleiades ID from various possible sources."""
+        # Direct source_id
+        if match_data.get('source_gazetteer') == 'pleiades' and match_data.get('source_id'):
+            return str(match_data['source_id'])
+        
+        # Extract from various URL fields
+        for url_key in ['identifier', 'uri', 'url', 'pleiades_url', 'link']:
+            url = match_data.get(url_key, '')
+            if isinstance(url, str) and 'pleiades.stoa.org/places/' in url:
+                parts = url.split('/places/')
+                if len(parts) > 1:
+                    pleiades_id = parts[1].split('/')[0].split('?')[0].split('#')[0]
+                    if pleiades_id.isdigit():
+                        return pleiades_id
+        
+        return None
     
     def export_to_recogito_format(self, text: str, entities: List[Dict], 
                                  title: str = "EntityLinker Export") -> str:
         """
         Export entities in Recogito-compatible JSON format.
-        
-        Args:
-            text: Original text
-            entities: List of entities
-            title: Document title
-            
-        Returns:
-            JSON string in Recogito format
         """
-        # Recogito annotation format
         annotations = []
         
         for idx, entity in enumerate(entities):
@@ -313,14 +608,6 @@ class PelagiosIntegration:
                          title: str = "EntityLinker Export") -> str:
         """
         Export annotated text as TEI XML with place markup.
-        
-        Args:
-            text: Original text
-            entities: List of entities
-            title: Document title
-            
-        Returns:
-            TEI XML string
         """
         # Create TEI structure
         tei_ns = "http://www.tei-c.org/ns/1.0"
@@ -415,12 +702,6 @@ class PelagiosIntegration:
     def create_pelagios_map_url(self, entities: List[Dict]) -> str:
         """
         Create a Peripleo map URL showing all georeferenced entities.
-        
-        Args:
-            entities: List of entities with coordinates
-            
-        Returns:
-            URL to Peripleo map view
         """
         # Filter entities with coordinates
         geo_entities = [e for e in entities if e.get('latitude') and e.get('longitude')]
@@ -446,10 +727,7 @@ class PelagiosIntegration:
 
 class EntityLinker:
     """
-    Main class for entity linking functionality with Pelagios integration.
-    
-    This class handles the complete pipeline from text processing to entity
-    extraction, validation, linking, and output generation.
+    Main class for entity linking functionality with improved Pelagios integration.
     """
     
     def __init__(self):
@@ -464,7 +742,8 @@ class EntityLinker:
             'LOCATION': '#EFCA89',        # F&B Yellow ground. 
             'FACILITY': '#C3B5AC',        # F&B Elephants breath
             'GSP': '#C4A998',             # F&B Dead salmon
-            'ADDRESS': '#CCBEAA'          # F&B Oxford stone
+            'ADDRESS': '#CCBEAA',         # F&B Oxford stone
+            'NORP': '#D4C5B9'             # F&B Elephant's breath light
         }
     
     def _load_spacy_model(self):
@@ -502,13 +781,13 @@ class EntityLinker:
             st.stop()
 
     def extract_entities(self, text: str):
-        """Extract named entities from text using spaCy with proper validation."""
+        """Extract named entities from text using spaCy with improved validation."""
         # Process text with spaCy
         doc = self.nlp(text)
         
         entities = []
         
-        # Step 1: Extract traditional named entities with validation
+        # Step 1: Extract traditional named entities with enhanced validation
         for ent in doc.ents:
             # Filter out unwanted entity types at the spaCy label level
             if ent.label_ in ['DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL']:
@@ -521,14 +800,15 @@ class EntityLinker:
             if entity_type in ['DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL']:
                 continue
             
-            # Validate entity using grammatical context
+            # Enhanced validation using grammatical context
             if self._is_valid_entity(ent.text, entity_type, ent):
                 entities.append({
                     'text': ent.text,
                     'type': entity_type,
                     'start': ent.start_char,
                     'end': ent.end_char,
-                    'label': ent.label_  # Keep original spaCy label for reference
+                    'label': ent.label_,  # Keep original spaCy label
+                    'confidence': ent._.get('confidence', 1.0) if hasattr(ent, '_') else 1.0
                 })
         
         # Step 2: Extract addresses
@@ -548,7 +828,7 @@ class EntityLinker:
             'GPE': 'GPE',  # Geopolitical entity
             'LOC': 'LOCATION',
             'FAC': 'FACILITY',
-            'NORP': 'GPE',  # Nationalities or religious or political groups -> GPE
+            'NORP': 'NORP',  # Nationalities or religious or political groups
             'EVENT': 'LOCATION',  # Events often have location relevance
             'WORK_OF_ART': 'ORGANIZATION',  # Often associated with organizations
             'LAW': 'ORGANIZATION',  # Laws often associated with organizations
@@ -557,15 +837,17 @@ class EntityLinker:
         return mapping.get(spacy_label, spacy_label)
 
     def _is_valid_entity(self, entity_text: str, entity_type: str, spacy_ent) -> bool:
-        """Validate an entity using spaCy's linguistic features."""
+        """Enhanced entity validation using spaCy's linguistic features."""
         # Skip very short entities
         if len(entity_text.strip()) <= 1:
             return False
         
-        # Use spaCy's built-in confidence and linguistic features
-        doc = spacy_ent.doc
+        # Skip common stopwords
+        if entity_text.lower() in ['the', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'at', 'by']:
+            return False
         
         # Get the token(s) for this entity
+        doc = spacy_ent.doc
         entity_tokens = [token for token in doc[spacy_ent.start:spacy_ent.end]]
         
         if not entity_tokens:
@@ -573,12 +855,20 @@ class EntityLinker:
         
         first_token = entity_tokens[0]
         
-        # Filter out words functioning as verbs or adjectives primarily
-        if first_token.pos_ in ['VERB', 'AUX'] or (first_token.pos_ == 'ADJ' and entity_type == 'PERSON'):
+        # Filter out words functioning primarily as verbs or adjectives
+        if first_token.pos_ in ['VERB', 'AUX']:
+            return False
+        
+        # Be more selective with adjectives for person entities
+        if first_token.pos_ == 'ADJ' and entity_type == 'PERSON':
             return False
         
         # Prefer proper nouns as they're more likely to be real entities
         if first_token.pos_ == 'PROPN':
+            return True
+        
+        # For place names, be more lenient with nouns
+        if entity_type in ['GPE', 'LOCATION', 'FACILITY'] and first_token.pos_ == 'NOUN':
             return True
         
         return True
@@ -600,14 +890,15 @@ class EntityLinker:
                     'text': match.group(),
                     'type': 'ADDRESS',
                     'start': match.start(),
-                    'end': match.end()
+                    'end': match.end(),
+                    'confidence': 0.8
                 })
         
         return addresses
 
     def _remove_overlapping_entities(self, entities):
-        """Remove overlapping entities, keeping the longest ones."""
-        entities.sort(key=lambda x: x['start'])
+        """Remove overlapping entities, keeping the longest and highest confidence ones."""
+        entities.sort(key=lambda x: (x['start'], -len(x['text']), -x.get('confidence', 1.0)))
         
         filtered = []
         for entity in entities:
@@ -615,12 +906,15 @@ class EntityLinker:
             for existing in filtered[:]:  # Create a copy to safely modify during iteration
                 # Check if entities overlap
                 if (entity['start'] < existing['end'] and entity['end'] > existing['start']):
-                    # If current entity is longer, remove the existing one
-                    if len(entity['text']) > len(existing['text']):
+                    # Compare by length first, then confidence
+                    entity_score = len(entity['text']) + entity.get('confidence', 1.0)
+                    existing_score = len(existing['text']) + existing.get('confidence', 1.0)
+                    
+                    if entity_score > existing_score:
                         filtered.remove(existing)
                         break
                     else:
-                        # Current entity is shorter, skip it
+                        # Current entity is lower quality, skip it
                         overlaps = True
                         break
             
@@ -640,11 +934,11 @@ class EntityLinker:
             entities
         )
         
-        place_types = ['GPE', 'LOCATION', 'FACILITY', 'ORGANIZATION', 'ADDRESS']
+        place_types = ['GPE', 'LOCATION', 'FACILITY', 'ORGANIZATION', 'ADDRESS', 'NORP']
         
         for entity in entities:
             if entity['type'] in place_types:
-                # Skip if already has coordinates
+                # Skip if already has coordinates from Pelagios
                 if entity.get('latitude') is not None:
                     continue
                 
@@ -665,52 +959,47 @@ class EntityLinker:
         return entities
     
     def _detect_geographical_context(self, text: str, entities: List[Dict[str, Any]]) -> List[str]:
-        """Detect geographical context from the text to improve geocoding accuracy."""
+        """Enhanced geographical context detection."""
         import re
         
         context_clues = []
         text_lower = text.lower()
         
-        # Extract major cities/countries mentioned in the text
+        # Enhanced location mapping with more comprehensive coverage
         major_locations = {
-            # Countries
-            'uk': ['uk', 'united kingdom', 'britain', 'great britain'],
+            # Countries and regions
+            'greece': ['greece', 'greek', 'hellas', 'hellenic'],
+            'egypt': ['egypt', 'egyptian'],
+            'persia': ['persia', 'persian', 'iran'],
+            'syria': ['syria', 'syrian', 'assyria', 'assyrian'],
+            'phoenicia': ['phoenicia', 'phoenician'],
+            'anatolia': ['anatolia', 'asia minor'],
+            'mesopotamia': ['mesopotamia', 'babylon', 'babylonia'],
+            'uk': ['uk', 'united kingdom', 'britain', 'great britain', 'england', 'scotland', 'wales'],
             'usa': ['usa', 'united states', 'america', 'us '],
-            'canada': ['canada'],
-            'australia': ['australia'],
-            'france': ['france'],
-            'germany': ['germany'],
-            'italy': ['italy'],
-            'spain': ['spain'],
-            'japan': ['japan'],
-            'china': ['china'],
-            'india': ['india'],
+            'italy': ['italy', 'italian', 'rome', 'roman'],
+            'france': ['france', 'french', 'gaul'],
             
-            # Major cities that provide strong context
-            'london': ['london'],
-            'new york': ['new york', 'nyc', 'manhattan'],
-            'paris': ['paris'],
-            'tokyo': ['tokyo'],
-            'sydney': ['sydney'],
-            'toronto': ['toronto'],
-            'berlin': ['berlin'],
-            'rome': ['rome'],
-            'madrid': ['madrid'],
-            'beijing': ['beijing'],
-            'mumbai': ['mumbai'],
-            'los angeles': ['los angeles', 'la ', ' la,'],
-            'chicago': ['chicago'],
-            'boston': ['boston'],
-            'edinburgh': ['edinburgh'],
-            'glasgow': ['glasgow'],
-            'manchester': ['manchester'],
-            'birmingham': ['birmingham'],
-            'liverpool': ['liverpool'],
-            'bristol': ['bristol'],
-            'leeds': ['leeds'],
-            'cardiff': ['cardiff'],
-            'belfast': ['belfast'],
-            'dublin': ['dublin'],
+            # Ancient regions for historical texts
+            'mediterranean': ['mediterranean', 'aegean', 'ionian'],
+            'black_sea': ['black sea', 'pontus', 'euxine'],
+            'red_sea': ['red sea', 'erythraean'],
+            
+            # Major ancient cities
+            'athens': ['athens', 'athenian'],
+            'sparta': ['sparta', 'spartan', 'lacedaemon'],
+            'thebes': ['thebes', 'theban'],
+            'corinth': ['corinth', 'corinthian'],
+            'argos': ['argos', 'argive'],
+            'troy': ['troy', 'trojan', 'ilium'],
+            'constantinople': ['constantinople', 'byzantium'],
+            'alexandria': ['alexandria', 'alexandrian'],
+            'antioch': ['antioch'],
+            'damascus': ['damascus'],
+            'baghdad': ['baghdad'],
+            'tabriz': ['tabriz'],
+            'samarkand': ['samarkand'],
+            'bukhara': ['bukhara']
         }
         
         # Check for explicit mentions
@@ -720,38 +1009,59 @@ class EntityLinker:
                     context_clues.append(location)
                     break
         
-        return context_clues[:3]  # Return top 3 context clues
+        # Also check entities for geographical context
+        for entity in entities:
+            if entity['type'] in ['GPE', 'LOCATION'] and entity['text'].lower() not in [c.lower() for c in context_clues]:
+                context_clues.append(entity['text'].lower())
+        
+        return context_clues[:5]  # Return top 5 context clues
 
     def _try_contextual_geocoding(self, entity, context_clues):
-        """Try geocoding with geographical context."""
+        """Enhanced contextual geocoding with historical awareness."""
         import requests
         import time
         
         if not context_clues:
             return False
         
-        # Create context-aware search terms
+        # Create context-aware search terms with historical variants
         search_variations = [entity['text']]
         
         # Add context to search terms
         for context in context_clues:
             context_mapping = {
+                'greece': ['Greece', 'Greek', 'Ancient Greece', 'Hellas'],
+                'egypt': ['Egypt', 'Ancient Egypt'],
+                'persia': ['Persia', 'Iran', 'Ancient Persia'],
+                'syria': ['Syria', 'Ancient Syria'],
+                'phoenicia': ['Phoenicia', 'Lebanon'],
+                'anatolia': ['Turkey', 'Asia Minor', 'Anatolia'],
+                'mesopotamia': ['Iraq', 'Mesopotamia'],
                 'uk': ['UK', 'United Kingdom', 'England', 'Britain'],
                 'usa': ['USA', 'United States', 'US'],
-                'canada': ['Canada'],
-                'australia': ['Australia'],
+                'italy': ['Italy', 'Ancient Rome'],
                 'france': ['France'],
-                'germany': ['Germany'],
-                'london': ['London, UK', 'London, England'],
-                'new york': ['New York, USA', 'New York, NY'],
-                'paris': ['Paris, France'],
-                'tokyo': ['Tokyo, Japan'],
-                'sydney': ['Sydney, Australia'],
+                'mediterranean': ['Mediterranean'],
+                'argos': ['Greece', 'Peloponnese'],
+                'athens': ['Greece', 'Attica'],
+                'sparta': ['Greece', 'Laconia'],
+                'troy': ['Turkey', 'Anatolia'],
+                'constantinople': ['Turkey', 'Istanbul'],
+                'alexandria': ['Egypt'],
+                'damascus': ['Syria'],
+                'baghdad': ['Iraq'],
+                'tabriz': ['Iran'],
+                'samarkand': ['Uzbekistan'],
+                'bukhara': ['Uzbekistan']
             }
             
             context_variants = context_mapping.get(context, [context])
             for variant in context_variants:
-                search_variations.append(f"{entity['text']}, {variant}")
+                search_variations.extend([
+                    f"{entity['text']}, {variant}",
+                    f"{entity['text']} {variant}",
+                    f"ancient {entity['text']} {variant}" if 'ancient' not in entity['text'].lower() else f"{entity['text']} {variant}"
+                ])
         
         # Remove duplicates while preserving order
         search_variations = list(dict.fromkeys(search_variations))
@@ -761,11 +1071,11 @@ class EntityLinker:
             from geopy.geocoders import Nominatim
             from geopy.exc import GeocoderTimedOut, GeocoderServiceError
             
-            geocoder = Nominatim(user_agent="EntityLinker/2.0", timeout=10)
+            geocoder = Nominatim(user_agent="EntityLinker/2.1", timeout=15)
             
-            for search_term in search_variations[:5]:  # Try top 5 variations
+            for search_term in search_variations[:7]:  # Try top 7 variations
                 try:
-                    location = geocoder.geocode(search_term, timeout=10)
+                    location = geocoder.geocode(search_term, timeout=15)
                     if location:
                         entity['latitude'] = location.latitude
                         entity['longitude'] = location.longitude
@@ -774,7 +1084,7 @@ class EntityLinker:
                         entity['search_term_used'] = search_term
                         return True
                     
-                    time.sleep(0.2)  # Rate limiting
+                    time.sleep(0.3)  # Rate limiting
                 except (GeocoderTimedOut, GeocoderServiceError):
                     continue
                     
@@ -784,19 +1094,19 @@ class EntityLinker:
         return False
     
     def _try_python_geocoding(self, entity):
-        """Try Python geocoding libraries (geopy) - original method."""
+        """Enhanced Python geocoding with multiple services."""
         try:
             from geopy.geocoders import Nominatim, ArcGIS
             from geopy.exc import GeocoderTimedOut, GeocoderServiceError
             
             geocoders = [
-                ('nominatim', Nominatim(user_agent="EntityLinker/2.0", timeout=10)),
-                ('arcgis', ArcGIS(timeout=10)),
+                ('nominatim', Nominatim(user_agent="EntityLinker/2.1", timeout=15)),
+                ('arcgis', ArcGIS(timeout=15)),
             ]
             
             for name, geocoder in geocoders:
                 try:
-                    location = geocoder.geocode(entity['text'], timeout=10)
+                    location = geocoder.geocode(entity['text'], timeout=15)
                     if location:
                         entity['latitude'] = location.latitude
                         entity['longitude'] = location.longitude
@@ -804,7 +1114,7 @@ class EntityLinker:
                         entity['geocoding_source'] = f'geopy_{name}'
                         return True
                         
-                    time.sleep(0.3)
+                    time.sleep(0.4)
                 except (GeocoderTimedOut, GeocoderServiceError):
                     continue
                 except Exception as e:
@@ -818,21 +1128,25 @@ class EntityLinker:
         return False
     
     def _try_openstreetmap(self, entity):
-        """Fall back to direct OpenStreetMap Nominatim API."""
+        """Enhanced OpenStreetMap geocoding with better error handling."""
         try:
             url = "https://nominatim.openstreetmap.org/search"
             params = {
                 'q': entity['text'],
                 'format': 'json',
                 'limit': 1,
-                'addressdetails': 1
+                'addressdetails': 1,
+                'accept-language': 'en'
             }
-            headers = {'User-Agent': 'EntityLinker/2.0'}
+            headers = {
+                'User-Agent': 'EntityLinker/2.1 (Academic Research)',
+                'Accept': 'application/json'
+            }
         
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=15)
             if response.status_code == 200:
                 data = response.json()
-                if data:
+                if data and len(data) > 0:
                     result = data[0]
                     entity['latitude'] = float(result['lat'])
                     entity['longitude'] = float(result['lon'])
@@ -840,7 +1154,7 @@ class EntityLinker:
                     entity['geocoding_source'] = 'openstreetmap'
                     return True
         
-            time.sleep(0.3)  # Rate limiting
+            time.sleep(0.4)  # Rate limiting
         except Exception as e:
             print(f"OpenStreetMap geocoding failed for {entity['text']}: {e}")
             pass
@@ -848,19 +1162,20 @@ class EntityLinker:
         return False
     
     def _try_aggressive_geocoding(self, entity):
-        """Try more aggressive geocoding with different search terms."""
+        """Enhanced aggressive geocoding with more search strategies."""
         import requests
         import time
         
-        # Try variations of the entity name
+        # Try more variations of the entity name
         search_variations = [
             entity['text'],
-            f"{entity['text']}, UK",  # Add country for UK places
-            f"{entity['text']}, England",
-            f"{entity['text']}, Scotland",
-            f"{entity['text']}, Wales",
-            f"{entity['text']} city",
-            f"{entity['text']} town"
+            f"{entity['text']}, Greece",  # Default to Greece for ancient names
+            f"{entity['text']}, Turkey",  # Many ancient places are now in Turkey
+            f"{entity['text']}, Italy",   # Or Italy
+            f"ancient {entity['text']}",
+            f"{entity['text']} ancient city",
+            f"{entity['text']} archaeological site",
+            entity['text'].split()[0] if ' ' in entity['text'] else entity['text'],  # First word only
         ]
         
         for search_term in search_variations:
@@ -870,14 +1185,18 @@ class EntityLinker:
                     'q': search_term,
                     'format': 'json',
                     'limit': 1,
-                    'addressdetails': 1
+                    'addressdetails': 1,
+                    'accept-language': 'en'
                 }
-                headers = {'User-Agent': 'EntityLinker/2.0'}
+                headers = {
+                    'User-Agent': 'EntityLinker/2.1 (Academic Research)',
+                    'Accept': 'application/json'
+                }
             
-                response = requests.get(url, params=params, headers=headers, timeout=10)
+                response = requests.get(url, params=params, headers=headers, timeout=15)
                 if response.status_code == 200:
                     data = response.json()
-                    if data:
+                    if data and len(data) > 0:
                         result = data[0]
                         entity['latitude'] = float(result['lat'])
                         entity['longitude'] = float(result['lon'])
@@ -886,45 +1205,64 @@ class EntityLinker:
                         entity['search_term_used'] = search_term
                         return True
             
-                time.sleep(0.2)  # Rate limiting between attempts
+                time.sleep(0.3)  # Rate limiting between attempts
             except Exception:
                 continue
         
         return False
 
     def link_to_wikidata(self, entities):
-        """Add basic Wikidata linking."""
+        """Enhanced Wikidata linking with better search strategies."""
         import requests
         import time
         
         for entity in entities:
             try:
-                url = "https://www.wikidata.org/w/api.php"
-                params = {
-                    'action': 'wbsearchentities',
-                    'format': 'json',
-                    'search': entity['text'],
-                    'language': 'en',
-                    'limit': 1,
-                    'type': 'item'
-                }
+                # Try multiple search strategies
+                search_terms = [
+                    entity['text'],
+                    f"{entity['text']} ancient",
+                    f"{entity['text']} city" if entity['type'] in ['GPE', 'LOCATION'] else entity['text']
+                ]
                 
-                response = requests.get(url, params=params, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('search') and len(data['search']) > 0:
-                        result = data['search'][0]
-                        entity['wikidata_url'] = f"http://www.wikidata.org/entity/{result['id']}"
-                        entity['wikidata_description'] = result.get('description', '')
+                for search_term in search_terms:
+                    url = "https://www.wikidata.org/w/api.php"
+                    params = {
+                        'action': 'wbsearchentities',
+                        'format': 'json',
+                        'search': search_term,
+                        'language': 'en',
+                        'limit': 3,
+                        'type': 'item'
+                    }
+                    
+                    response = requests.get(url, params=params, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('search') and len(data['search']) > 0:
+                            # Look for best match
+                            for result in data['search']:
+                                # Prefer exact matches or close matches
+                                if (result['label'].lower() == entity['text'].lower() or
+                                    entity['text'].lower() in result['label'].lower()):
+                                    entity['wikidata_url'] = f"http://www.wikidata.org/entity/{result['id']}"
+                                    entity['wikidata_description'] = result.get('description', '')
+                                    break
+                            else:
+                                # If no perfect match, use first result
+                                result = data['search'][0]
+                                entity['wikidata_url'] = f"http://www.wikidata.org/entity/{result['id']}"
+                                entity['wikidata_description'] = result.get('description', '')
+                            break
                 
-                time.sleep(0.1)  # Rate limiting
+                time.sleep(0.2)  # Rate limiting
             except Exception:
                 pass  # Continue if API call fails
         
         return entities
 
     def link_to_wikipedia(self, entities):
-        """Add Wikipedia linking for entities without Wikidata links."""
+        """Enhanced Wikipedia linking with better search and disambiguation."""
         import requests
         import time
         import urllib.parse
@@ -935,39 +1273,56 @@ class EntityLinker:
                 continue
                 
             try:
-                # Use Wikipedia's search API
-                search_url = "https://en.wikipedia.org/w/api.php"
-                search_params = {
-                    'action': 'query',
-                    'format': 'json',
-                    'list': 'search',
-                    'srsearch': entity['text'],
-                    'srlimit': 1
-                }
+                # Try multiple search strategies
+                search_terms = [
+                    entity['text'],
+                    f"{entity['text']} ancient",
+                    f"{entity['text']} city" if entity['type'] in ['GPE', 'LOCATION'] else entity['text'],
+                    f"{entity['text']} (ancient city)" if entity['type'] in ['GPE', 'LOCATION'] else entity['text']
+                ]
                 
-                headers = {'User-Agent': 'EntityLinker/2.0'}
-                response = requests.get(search_url, params=search_params, headers=headers, timeout=10)
+                for search_term in search_terms:
+                    # Use Wikipedia's search API
+                    search_url = "https://en.wikipedia.org/w/api.php"
+                    search_params = {
+                        'action': 'query',
+                        'format': 'json',
+                        'list': 'search',
+                        'srsearch': search_term,
+                        'srlimit': 3,
+                        'srprop': 'snippet|titlesnippet'
+                    }
+                    
+                    headers = {'User-Agent': 'EntityLinker/2.1 (Academic Research)'}
+                    response = requests.get(search_url, params=search_params, headers=headers, timeout=15)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('query', {}).get('search'):
+                            # Look for best match
+                            for result in data['query']['search']:
+                                page_title = result['title']
+                                
+                                # Prefer exact matches or close matches
+                                if (entity['text'].lower() in page_title.lower() or
+                                    any(word in page_title.lower() for word in entity['text'].lower().split())):
+                                    
+                                    # Create Wikipedia URL
+                                    encoded_title = urllib.parse.quote(page_title.replace(' ', '_'))
+                                    entity['wikipedia_url'] = f"https://en.wikipedia.org/wiki/{encoded_title}"
+                                    entity['wikipedia_title'] = page_title
+                                    
+                                    # Get a snippet/description from the search result
+                                    if result.get('snippet'):
+                                        import re
+                                        snippet = re.sub(r'<[^>]+>', '', result['snippet'])
+                                        entity['wikipedia_description'] = snippet[:200] + "..." if len(snippet) > 200 else snippet
+                                    break
+                            
+                            if entity.get('wikipedia_url'):
+                                break
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('query', {}).get('search'):
-                        # Get the first search result
-                        result = data['query']['search'][0]
-                        page_title = result['title']
-                        
-                        # Create Wikipedia URL
-                        encoded_title = urllib.parse.quote(page_title.replace(' ', '_'))
-                        entity['wikipedia_url'] = f"https://en.wikipedia.org/wiki/{encoded_title}"
-                        entity['wikipedia_title'] = page_title
-                        
-                        # Get a snippet/description from the search result
-                        if result.get('snippet'):
-                            # Clean up the snippet (remove HTML tags)
-                            import re
-                            snippet = re.sub(r'<[^>]+>', '', result['snippet'])
-                            entity['wikipedia_description'] = snippet[:200] + "..." if len(snippet) > 200 else snippet
-                
-                time.sleep(0.2)  # Rate limiting
+                time.sleep(0.3)  # Rate limiting
             except Exception as e:
                 print(f"Wikipedia linking failed for {entity['text']}: {e}")
                 pass
@@ -975,7 +1330,7 @@ class EntityLinker:
         return entities
 
     def link_to_britannica(self, entities):
-        """Add basic Britannica linking.""" 
+        """Enhanced Britannica linking with better search patterns.""" 
         import requests
         import re
         import time
@@ -986,26 +1341,45 @@ class EntityLinker:
                 continue
                 
             try:
-                search_url = "https://www.britannica.com/search"
-                params = {'query': entity['text']}
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
+                search_terms = [
+                    entity['text'],
+                    f"{entity['text']} ancient",
+                    f"{entity['text']} city" if entity['type'] in ['GPE', 'LOCATION'] else entity['text']
+                ]
                 
-                response = requests.get(search_url, params=params, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    # Look for article links
-                    pattern = r'href="(/topic/[^"]*)"[^>]*>([^<]*)</a>'
-                    matches = re.findall(pattern, response.text)
+                for search_term in search_terms:
+                    search_url = "https://www.britannica.com/search"
+                    params = {'query': search_term}
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
                     
-                    for url_path, link_text in matches:
-                        if (entity['text'].lower() in link_text.lower() or 
-                            link_text.lower() in entity['text'].lower()):
-                            entity['britannica_url'] = f"https://www.britannica.com{url_path}"
-                            entity['britannica_title'] = link_text.strip()
-                            break
+                    response = requests.get(search_url, params=params, headers=headers, timeout=15)
+                    if response.status_code == 200:
+                        # Look for article links with improved patterns
+                        patterns = [
+                            r'href="(/topic/[^"]*)"[^>]*>([^<]*)</a>',
+                            r'href="(/place/[^"]*)"[^>]*>([^<]*)</a>',
+                            r'href="(/biography/[^"]*)"[^>]*>([^<]*)</a>'
+                        ]
+                        
+                        for pattern in patterns:
+                            matches = re.findall(pattern, response.text)
+                            for url_path, link_text in matches:
+                                if (entity['text'].lower() in link_text.lower() or 
+                                    link_text.lower() in entity['text'].lower() or
+                                    any(word in link_text.lower() for word in entity['text'].lower().split())):
+                                    entity['britannica_url'] = f"https://www.britannica.com{url_path}"
+                                    entity['britannica_title'] = link_text.strip()
+                                    break
+                            
+                            if entity.get('britannica_url'):
+                                break
+                    
+                    if entity.get('britannica_url'):
+                        break
                 
-                time.sleep(0.3)  # Rate limiting
+                time.sleep(0.4)  # Rate limiting
             except Exception:
                 pass
         
@@ -1014,10 +1388,7 @@ class EntityLinker:
 
 class StreamlitEntityLinker:
     """
-    Streamlit wrapper for the EntityLinker class with Pelagios integration.
-    
-    Provides a web interface with additional visualization and
-    export capabilities for entity analysis.
+    Enhanced Streamlit wrapper for the EntityLinker class with improved Pelagios integration.
     """
     
     def __init__(self):
@@ -1078,25 +1449,21 @@ class StreamlitEntityLinker:
         """Render the application header with logo."""
         # Display logo if it exists
         try:
-            # Try to load and display the logo
-            logo_path = "logo.png"  # You can change this filename as needed
+            logo_path = "logo.png"
             if os.path.exists(logo_path):
-                # Logo naturally aligns to the left without columns
-                st.image(logo_path, width=300)  # Adjust width as needed
+                st.image(logo_path, width=300)
             else:
-                # If logo file doesn't exist, show a placeholder or message
                 st.info("Place your logo.png file in the same directory as this app to display it here")
         except Exception as e:
-            # If there's any error loading the logo, continue without it
             st.warning(f"Could not load logo: {e}")        
-        # Add some spacing after logo
+        
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Main title and description
         st.header("From Text to Linked Data using spaCy + Pelagios")
         st.markdown("**Extract and link named entities from text to external knowledge bases including historical gazetteers**")
         
-        # Create a simple process diagram
+        # Enhanced process diagram
         st.markdown("""
         <div style="background-color: white; padding: 20px; border-radius: 10px; margin: 20px 0; border: 1px solid #E0D7C0;">
             <div style="text-align: center; margin-bottom: 20px;">
@@ -1105,21 +1472,24 @@ class StreamlitEntityLinker:
                 </div>
                 <div style="margin: 10px 0;">⬇️</div>
                 <div style="background-color: #9fd2cd; padding: 10px; border-radius: 5px; display: inline-block; margin: 5px;">
-                     <strong>spaCy Entity Recognition</strong>
+                     <strong>Enhanced spaCy Entity Recognition</strong>
                 </div>
                 <div style="margin: 10px 0;">⬇️</div>
                 <div style="text-align: center;">
-                    <strong>Link to Knowledge Bases:</strong>
+                    <strong>Multi-Source Entity Linking:</strong>
                 </div>
                 <div style="margin: 15px 0;">
                     <div style="background-color: #EFCA89; padding: 8px; border-radius: 5px; display: inline-block; margin: 3px; font-size: 0.9em;">
-                         <strong>Pelagios/Peripleo</strong><br><small>Historical geography</small>
+                         <strong>Pelagios/Peripleo</strong><br><small>Historical geography with fallbacks</small>
                     </div>
                     <div style="background-color: #C3B5AC; padding: 8px; border-radius: 5px; display: inline-block; margin: 3px; font-size: 0.9em;">
-                        <strong>Pleiades</strong><br><small>Ancient world gazetteer</small>
+                        <strong>Pleiades Direct</strong><br><small>Ancient world gazetteer</small>
                     </div>
                     <div style="background-color: #BF7B69; padding: 8px; border-radius: 5px; display: inline-block; margin: 3px; font-size: 0.9em;">
                          <strong>Wikidata/Wikipedia</strong><br><small>General knowledge</small>
+                    </div>
+                    <div style="background-color: #D4C5B9; padding: 8px; border-radius: 5px; display: inline-block; margin: 3px; font-size: 0.9em;">
+                         <strong>Enhanced Geocoding</strong><br><small>Multiple mapping services</small>
                     </div>
                 </div>
                 <div style="margin: 10px 0;">⬇️</div>
@@ -1142,22 +1512,29 @@ class StreamlitEntityLinker:
         """, unsafe_allow_html=True)
 
     def render_sidebar(self):
-        """Render the sidebar with information."""
+        """Render the sidebar with enhanced information."""
         # Entity linking information
-        st.sidebar.subheader("Entity Linking")
-        st.sidebar.info("Entities are linked to Pelagios (historical places), Wikidata, Wikipedia, and Britannica as fallbacks. Places are geocoded using multiple services.")
+        st.sidebar.subheader("🔗 Entity Linking")
+        st.sidebar.info("Enhanced multi-source linking: Pelagios historical places, direct Pleiades search, Wikidata, Wikipedia, and Britannica as fallbacks. Places are geocoded using multiple services with contextual awareness.")
         
         # Pelagios information
-        st.sidebar.subheader("Pelagios Integration")
-        st.sidebar.info("Historical places are enhanced with data from Peripleo and linked to authoritative gazetteers like Pleiades for ancient world geography.")
+        st.sidebar.subheader("🏛️ Pelagios Integration")
+        st.sidebar.info("Historical places are enhanced with data from Peripleo with direct Pleiades fallback. Includes temporal bounds, place types, and authoritative ancient world coordinates.")
         
         # Export formats
-        st.sidebar.subheader("Export Formats")
-        st.sidebar.info("Results can be exported as Recogito annotations for collaborative markup, TEI XML for digital humanities, or JSON-LD for linked data applications.")
+        st.sidebar.subheader("📤 Export Formats")
+        st.sidebar.info("Results exported as Recogito annotations for collaborative markup, TEI XML for digital humanities, or JSON-LD for linked data applications.")
+        
+        # Debugging information
+        st.sidebar.subheader("🔧 Debug Information")
+        if st.sidebar.checkbox("Show debug output"):
+            st.session_state.show_debug = True
+        else:
+            st.session_state.show_debug = False
 
     def render_input_section(self):
-        """Render the text input section."""
-        st.header("Input Text")
+        """Render the enhanced text input section."""
+        st.header("📝 Input Text")
         
         # Add title input
         analysis_title = st.text_input(
@@ -1166,117 +1543,129 @@ class StreamlitEntityLinker:
             help="This will be used for naming output files"
         )
         
-        # Sample text for demonstration - Marco Polo sample
-        sample_text = """When we departed from Constantinople, we journeyed through Armenia Minor and came to the great city of Trebizond on the shores of the Black Sea. From thence we traveled inland through Erzurum and across the high passes of the Armenian mountains until we reached the ancient city of Tabriz in Persia, where merchants gather from all corners of the known world.
-
-From Tabriz we proceeded to Baghdad, that great city on the river Tigris where the Caliph once held sway over all the lands of Islam. Though much diminished since the coming of the Mongol host, Baghdad still serves as a crossroads for caravans traveling between Damascus and the cities of India. We observed there the ruins of great palaces and learned from local merchants of the trade routes that lead to Samarkand and Bukhara, those jewels of the Silk Road.
-
-Our path then led us through the desert of Khorasan to the city of Balkh, which the ancients called the Mother of Cities. Here Alexander the Great established his northern capital, and here too the armies of Genghis Khan laid waste to temples and bazaars. From Balkh we crossed the Oxus River and climbed into the Pamir Mountains, that roof of the world where no trees grow and the air is so thin that fire burns pale and weak."""       
+        # Enhanced sample text - Herodotus passage for better historical testing
+        sample_text = """The Persian learned men say that the Phoenicians were the cause of the dispute. These (they say) came to our seas from the sea which is called Red, and having settled in the country which they still occupy, at once began to make long voyages. Among other places to which they carried Egyptian and Assyrian merchandise, they came to Argos, which was at that time preeminent in every way among the people of what is now called Hellas. The Phoenicians came to Argos, and set out their cargo. On the fifth or sixth day after their arrival, when their wares were almost all sold, many women came to the shore and among them especially the daughter of the king, whose name was Io (according to Persians and Greeks alike), the daughter of Inachus. As these stood about the stern of the ship bargaining for the wares they liked, the Phoenicians incited one another to set upon them. Most of the women escaped: Io and others were seized and thrown into the ship, which then sailed away for Egypt."""       
         
-        # Text input area - always shown and editable
+        # Text input area with sample
         text_input = st.text_area(
             "Enter your text here:",
-            value=sample_text,  # Pre-populate with sample text
-            height=200,  # Reduced height for mobile
+            value=sample_text,
+            height=200,
             placeholder="Paste your text here for entity extraction...",
-            help="You can edit this text or replace it with your own content. This sample shows Marco Polo's travels - perfect for testing Pelagios integration!"
+            help="This sample from Herodotus includes ancient places perfect for testing Pelagios integration: Argos, Egypt, Assyria, Hellas, and more!"
         )
         
-        # File upload option in expander for mobile
-        with st.expander("Or upload a text file"):
+        # File upload option
+        with st.expander("📁 Or upload a text file"):
             uploaded_file = st.file_uploader(
                 "Choose a text file",
                 type=['txt', 'md'],
-                help="Upload a plain text file (.txt) or Markdown file (.md) to replace the text above"
+                help="Upload a plain text file (.txt) or Markdown file (.md)"
             )
             
             if uploaded_file is not None:
                 try:
                     uploaded_text = str(uploaded_file.read(), "utf-8")
-                    text_input = uploaded_text  # Override the text area content
-                    st.success(f"File uploaded successfully! ({len(uploaded_text)} characters)")
-                    # Set default title from filename if no title provided
+                    text_input = uploaded_text
+                    st.success(f"✅ File uploaded successfully! ({len(uploaded_text)} characters)")
                     if not analysis_title:
                         import os
                         default_title = os.path.splitext(uploaded_file.name)[0]
                         st.session_state.suggested_title = default_title
                 except Exception as e:
-                    st.error(f"Error reading file: {e}")
+                    st.error(f"❌ Error reading file: {e}")
         
         # Use suggested title if no title provided
         if not analysis_title and hasattr(st.session_state, 'suggested_title'):
             analysis_title = st.session_state.suggested_title
         elif not analysis_title and not uploaded_file:
-            analysis_title = "marco_polo_travels"
+            analysis_title = "herodotus_histories"
         
         return text_input, analysis_title or "text_analysis"
 
     def process_text(self, text: str, title: str):
         """
-        Process the input text using the EntityLinker with Pelagios integration.
-        
-        Args:
-            text: Input text to process
-            title: Analysis title
+        Enhanced text processing with improved error handling and debugging.
         """
         if not text.strip():
-            st.warning("Please enter some text to analyze.")
+            st.warning("⚠️ Please enter some text to analyze.")
             return
         
         # Check if we've already processed this exact text
         text_hash = hashlib.md5(text.encode()).hexdigest()
         
         if text_hash == st.session_state.last_processed_hash:
-            st.info("This text has already been processed. Results shown below.")
+            st.info("ℹ️ This text has already been processed. Results shown below.")
             return
         
-        with st.spinner("Processing text and extracting entities..."):
+        with st.spinner("🔄 Processing text and extracting entities..."):
             try:
-                # Create a progress bar for the different steps
+                # Create enhanced progress tracking
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                debug_container = st.expander("🔧 Processing Details", expanded=st.session_state.get('show_debug', False))
+                
+                with debug_container:
+                    debug_text = st.empty()
                 
                 # Step 1: Extract entities (cached)
-                status_text.text("Extracting entities with spaCy...")
-                progress_bar.progress(15)
+                status_text.text("🔍 Extracting entities with enhanced spaCy...")
+                debug_text.text("Starting entity extraction...")
+                progress_bar.progress(10)
                 entities = self.cached_extract_entities(text)
+                debug_text.text(f"Found {len(entities)} initial entities: {[e['text'] for e in entities[:5]]}...")
                 
-                # Step 2: Link to Wikidata (cached)
-                status_text.text("Linking to Wikidata...")
-                progress_bar.progress(30)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_wikidata(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 3: Link to Wikipedia (cached)
-                status_text.text("Linking to Wikipedia...")
-                progress_bar.progress(45)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_wikipedia(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 4: Link to Britannica (cached)
-                status_text.text("Linking to Britannica...")
-                progress_bar.progress(55)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_britannica(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 5: Enhance with Pelagios (NEW!)
-                status_text.text("Enhancing with Pelagios historical data...")
-                progress_bar.progress(70)
+                # Step 2: Enhance with Pelagios (PRIORITIZED)
+                status_text.text("🏛️ Enhancing with Pelagios historical data...")
+                progress_bar.progress(25)
                 entities_json = json.dumps(entities, default=str)
                 enhanced_entities_json = self.cached_enhance_with_pelagios(entities_json)
                 entities = json.loads(enhanced_entities_json)
                 
-                # Step 6: Get coordinates
-                status_text.text("Getting coordinates...")
+                pelagios_count = len([e for e in entities if e.get('pelagios_data')])
+                debug_text.text(f"Pelagios enhanced {pelagios_count} entities")
+                
+                # Step 3: Link to Wikidata (cached)
+                status_text.text("🔗 Linking to Wikidata...")
+                progress_bar.progress(45)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_wikidata(entities_json)
+                entities = json.loads(linked_entities_json)
+                
+                wikidata_count = len([e for e in entities if e.get('wikidata_url')])
+                debug_text.text(f"Wikidata linked {wikidata_count} entities")
+                
+                # Step 4: Link to Wikipedia (cached)
+                status_text.text("📖 Linking to Wikipedia...")
+                progress_bar.progress(60)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_wikipedia(entities_json)
+                entities = json.loads(linked_entities_json)
+                
+                wikipedia_count = len([e for e in entities if e.get('wikipedia_url')])
+                debug_text.text(f"Wikipedia linked {wikipedia_count} entities")
+                
+                # Step 5: Link to Britannica (cached)
+                status_text.text("📚 Linking to Britannica...")
+                progress_bar.progress(75)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_britannica(entities_json)
+                entities = json.loads(linked_entities_json)
+                
+                britannica_count = len([e for e in entities if e.get('britannica_url')])
+                debug_text.text(f"Britannica linked {britannica_count} entities")
+                
+                # Step 6: Enhanced coordinate lookup
+                status_text.text("🌍 Getting enhanced coordinates...")
                 progress_bar.progress(85)
                 entities = self.entity_linker.get_coordinates(entities)
                 
+                geocoded_count = len([e for e in entities if e.get('latitude')])
+                debug_text.text(f"Geocoded {geocoded_count} places")
+                
                 # Step 7: Generate visualization
-                status_text.text("Generating visualization...")
-                progress_bar.progress(100)
+                status_text.text("🎨 Generating enhanced visualization...")
+                progress_bar.progress(95)
                 html_content = self.create_highlighted_html(text, entities)
                 
                 # Store in session state
@@ -1286,34 +1675,41 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 st.session_state.analysis_title = title
                 st.session_state.last_processed_hash = text_hash
                 
-                # Clear progress indicators
-                progress_bar.empty()
+                # Complete
+                progress_bar.progress(100)
                 status_text.empty()
                 
-                # Show summary
+                # Enhanced summary
                 pelagios_enhanced = len([e for e in entities if e.get('pelagios_data')])
-                geocoded = len([e for e in entities if e.get('latitude')])
+                pleiades_linked = len([e for e in entities if e.get('pleiades_id')])
+                total_linked = len([e for e in entities if any([
+                    e.get('pleiades_id'), e.get('wikidata_url'), 
+                    e.get('wikipedia_url'), e.get('britannica_url')
+                ])])
                 
-                st.success(f"Processing complete! Found {len(entities)} entities")
+                st.success(f"✅ Processing complete! Found {len(entities)} entities")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("🏛️ Pelagios Enhanced", pelagios_enhanced)
+                with col2:
+                    st.metric("🏺 Pleiades Linked", pleiades_linked)
+                with col3:
+                    st.metric("🔗 Total Linked", total_linked)
+                with col4:
+                    st.metric("🌍 Geocoded", geocoded_count)
+                
                 if pelagios_enhanced > 0:
-                    st.info(f"{pelagios_enhanced} places enhanced with Pelagios data")
-                if geocoded > 0:
-                    st.info(f"{geocoded} places geocoded with coordinates")
+                    st.info(f"🎯 Successfully enhanced {pelagios_enhanced} places with historical data!")
                 
             except Exception as e:
-                st.error(f"Error processing text: {e}")
-                st.exception(e)
+                st.error(f"❌ Error processing text: {e}")
+                if st.session_state.get('show_debug', False):
+                    st.exception(e)
 
     def create_highlighted_html(self, text: str, entities: List[Dict[str, Any]]) -> str:
         """
-        Create HTML content with highlighted entities for display.
-        
-        Args:
-            text: Original text
-            entities: List of entity dictionaries
-            
-        Returns:
-            HTML string with highlighted entities
+        Enhanced HTML highlighting with improved visual indicators.
         """
         import html as html_module
         
@@ -1323,29 +1719,29 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         # Start with escaped text
         highlighted = html_module.escape(text)
         
-        # Color scheme (updated for spaCy entity types)
+        # Enhanced color scheme
         colors = {
             'PERSON': '#BF7B69',          # F&B Red earth        
             'ORGANIZATION': '#9fd2cd',    # F&B Blue ground
             'GPE': '#C4C3A2',             # F&B Cooking apple green
             'LOCATION': '#EFCA89',        # F&B Yellow ground 
             'FACILITY': '#C3B5AC',        # F&B Elephants breath
-            'GSP': '#C4A998',             # F&B Dead salmon
+            'NORP': '#D4C5B9',            # F&B Elephant's breath light
             'ADDRESS': '#CCBEAA'          # F&B Oxford stone
         }
         
         # Replace entities from end to start
         for entity in sorted_entities:
-            # Highlight entities that have links OR coordinates OR Pelagios data
-            has_links = (entity.get('britannica_url') or 
-                         entity.get('wikidata_url') or 
-                         entity.get('wikipedia_url') or     
-                         entity.get('openstreetmap_url') or
-                         entity.get('pleiades_url'))
-            has_coordinates = entity.get('latitude') is not None
+            # Only highlight entities that have links OR coordinates OR Pelagios data
+            has_pleiades = entity.get('pleiades_id') is not None
             has_pelagios = entity.get('pelagios_data') is not None
+            has_links = any([
+                entity.get('wikidata_url'), entity.get('wikipedia_url'), 
+                entity.get('britannica_url')
+            ])
+            has_coordinates = entity.get('latitude') is not None
             
-            if not (has_links or has_coordinates or has_pelagios):
+            if not (has_pleiades or has_pelagios or has_links or has_coordinates):
                 continue
                 
             start = entity['start']
@@ -1354,28 +1750,43 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
             escaped_entity_text = html_module.escape(original_entity_text)
             color = colors.get(entity['type'], '#E7E2D2')
             
-            # Create tooltip with entity information
+            # Enhanced tooltip with more information
             tooltip_parts = [f"Type: {entity['type']}"]
+            
             if entity.get('pelagios_data'):
                 pelagios_data = entity['pelagios_data']
                 if pelagios_data.get('peripleo_title'):
                     tooltip_parts.append(f"Peripleo: {pelagios_data['peripleo_title']}")
                 if pelagios_data.get('temporal_bounds'):
                     tooltip_parts.append(f"Period: {pelagios_data['temporal_bounds']}")
+                if pelagios_data.get('place_types'):
+                    tooltip_parts.append(f"Types: {', '.join(pelagios_data['place_types'][:2])}")
+            
+            if entity.get('pleiades_id'):
+                tooltip_parts.append(f"Pleiades ID: {entity['pleiades_id']}")
+            
             if entity.get('wikidata_description'):
-                tooltip_parts.append(f"Description: {entity['wikidata_description']}")
+                desc = entity['wikidata_description'][:100] + "..." if len(entity['wikidata_description']) > 100 else entity['wikidata_description']
+                tooltip_parts.append(f"Description: {desc}")
+            
             if entity.get('location_name'):
-                tooltip_parts.append(f"Location: {entity['location_name']}")
+                tooltip_parts.append(f"Modern: {entity['location_name'][:50]}...")
+            
+            if entity.get('geocoding_source'):
+                tooltip_parts.append(f"Source: {entity['geocoding_source']}")
             
             tooltip = " | ".join(tooltip_parts)
             
-            # Create highlighted span with link (priority: Pleiades > Peripleo > Wikipedia > Wikidata > Britannica > OpenStreetMap)
-            if entity.get('pleiades_url'):
+            # Enhanced link priority and visual styling
+            border_style = ""
+            if has_pleiades:
                 url = html_module.escape(entity["pleiades_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 2px solid #8B4513;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
-            elif entity.get('pelagios_data', {}).get('peripleo_url'):
+                border_style = "border: 2px solid #8B4513; font-weight: bold;"
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; {border_style}" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+            elif has_pelagios and entity.get('pelagios_data', {}).get('peripleo_url'):
                 url = html_module.escape(entity["pelagios_data"]["peripleo_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 2px solid #D2691E;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                border_style = "border: 2px solid #D2691E; font-weight: bold;"
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; {border_style}" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('wikipedia_url'):
                 url = html_module.escape(entity["wikipedia_url"])
                 replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
@@ -1384,9 +1795,6 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('britannica_url'):
                 url = html_module.escape(entity["britannica_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
-            elif entity.get('openstreetmap_url'):
-                url = html_module.escape(entity["openstreetmap_url"])
                 replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             else:
                 # Just highlight with coordinates (no link)
@@ -1405,128 +1813,211 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         return highlighted
 
     def render_results(self):
-        """Render the results section with entities and visualizations."""
+        """Enhanced results section with better organization."""
         if not st.session_state.entities:
-            st.info("Enter some text above and click 'Process Text' to see results.")
+            st.info("📝 Enter some text above and click 'Process Text' to see results.")
             return
         
         entities = st.session_state.entities
         
-        st.header("Results")
+        st.header("📊 Results")
         
-        # Statistics
-        self.render_statistics(entities)
+        # Enhanced statistics
+        self.render_enhanced_statistics(entities)
         
-        # Highlighted text
-        st.subheader("Highlighted Text")
-        st.markdown("Entities are highlighted and linked. Places with Pelagios data have special borders:")
+        # Highlighted text with improved legend
+        st.subheader("🎨 Highlighted Text")
         
-        # Legend
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown("**Pleiades** (brown border)")
-        with col2:
-            st.markdown("**Peripleo** (orange border)")
-        with col3:
-            st.markdown("**Other sources** (no border)")
+        # Enhanced legend with icons
+        st.markdown("""
+        **Visual Legend:**
+        - 🏺 **Pleiades entities** (brown border) - Ancient world gazetteer
+        - 🏛️ **Peripleo entities** (orange border) - Historical geography
+        - 🔗 **Other linked entities** (colored background) - General knowledge bases
+        """)
         
         if st.session_state.html_content:
+            # Add custom CSS for better mobile display
+            st.markdown("""
+            <style>
+            .highlighted-text {
+                line-height: 1.8;
+                font-size: 16px;
+                padding: 20px;
+                background-color: white;
+                border-radius: 10px;
+                border: 1px solid #E0D7C0;
+                margin: 10px 0;
+            }
+            @media (max-width: 768px) {
+                .highlighted-text {
+                    font-size: 14px;
+                    padding: 15px;
+                    line-height: 1.6;
+                }
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            
             st.markdown(
-                st.session_state.html_content,
+                f'<div class="highlighted-text">{st.session_state.html_content}</div>',
                 unsafe_allow_html=True
             )
         else:
             st.info("No highlighted text available. Process some text first.")
         
-        # Pelagios enhanced entities section
-        pelagios_entities = [e for e in entities if e.get('pelagios_data')]
+        # Enhanced Pelagios section
+        pelagios_entities = [e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')]
         if pelagios_entities:
-            with st.expander(f"Pelagios Enhanced Places ({len(pelagios_entities)})", expanded=True):
+            with st.expander(f"🏛️ Pelagios & Pleiades Enhanced Places ({len(pelagios_entities)})", expanded=True):
                 for entity in pelagios_entities:
-                    pelagios_data = entity['pelagios_data']
-                    col1, col2 = st.columns([2, 3])
-                    
-                    with col1:
-                        st.write(f"**{entity['text']}**")
-                        if entity.get('pleiades_url'):
-                            st.markdown(f"[Pleiades]({entity['pleiades_url']})")
-                        st.markdown(f"[Peripleo]({pelagios_data.get('peripleo_url', '#')})")
-                    
-                    with col2:
-                        if pelagios_data.get('peripleo_description'):
-                            st.write(pelagios_data['peripleo_description'])
-                        if pelagios_data.get('temporal_bounds'):
-                            st.write(f"**Period:** {pelagios_data['temporal_bounds']}")
-                        if pelagios_data.get('place_types'):
-                            st.write(f"**Types:** {', '.join(pelagios_data['place_types'])}")
-                    
-                    st.write("---")
+                    self.render_pelagios_entity_card(entity)
         
-        # Maps section
+        # Maps section with enhanced features
         geo_entities = [e for e in entities if e.get('latitude') and e.get('longitude')]
         if geo_entities:
-            st.subheader("Geographic Visualization")
+            st.subheader("🗺️ Geographic Visualization")
             
-            # Create map
-            self.render_map(geo_entities)
+            # Enhanced map
+            self.render_enhanced_map(geo_entities)
             
             # Peripleo map link
             if pelagios_entities:
                 map_url = self.pelagios.create_pelagios_map_url(entities)
-                st.markdown(f"[View all places on Peripleo Map]({map_url})")
+                st.markdown(f"🌍 [**View all places on Peripleo Interactive Map**]({map_url})")
         
-        # Entity details in collapsible section for mobile
-        with st.expander("Entity Details", expanded=False):
-            self.render_entity_table(entities)
+        # Collapsible sections for mobile
+        with st.expander("📋 Entity Details Table", expanded=False):
+            self.render_enhanced_entity_table(entities)
         
-        # Export options in collapsible section for mobile
-        with st.expander("Export Results", expanded=False):
-            self.render_export_section(entities)
+        with st.expander("📤 Export Results", expanded=False):
+            self.render_enhanced_export_section(entities)
 
-    def render_statistics(self, entities: List[Dict[str, Any]]):
-        """Render statistics about the extracted entities."""
-        # Create columns for metrics (works well on mobile)
+    def render_enhanced_statistics(self, entities: List[Dict[str, Any]]):
+        """Enhanced statistics with more detailed metrics."""
+        # Main metrics
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Entities", len(entities))
+            st.metric("📊 Total Entities", len(entities))
         
         with col2:
-            geocoded_count = len([e for e in entities if e.get('latitude')])
-            st.metric("Geocoded Places", geocoded_count)
+            pelagios_count = len([e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')])
+            st.metric("🏛️ Pelagios Enhanced", pelagios_count)
         
         with col3:
-            linked_count = len([e for e in entities if e.get('wikidata_url') or e.get('wikipedia_url') or e.get('britannica_url')])
-            st.metric("Linked Entities", linked_count)
+            geocoded_count = len([e for e in entities if e.get('latitude')])
+            st.metric("🌍 Geocoded", geocoded_count)
         
         with col4:
-            pelagios_count = len([e for e in entities if e.get('pelagios_data')])
-            st.metric("Pelagios Enhanced", pelagios_count)
+            linked_count = len([e for e in entities if any([
+                e.get('wikidata_url'), e.get('wikipedia_url'), e.get('britannica_url')
+            ])])
+            st.metric("🔗 Linked", linked_count)
+        
+        # Detailed breakdown
+        with st.expander("📈 Detailed Statistics"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Entity Types")
+                type_counts = {}
+                for entity in entities:
+                    entity_type = entity['type']
+                    type_counts[entity_type] = type_counts.get(entity_type, 0) + 1
+                
+                for entity_type, count in sorted(type_counts.items()):
+                    st.write(f"**{entity_type}:** {count}")
+            
+            with col2:
+                st.subheader("Linking Success")
+                pleiades_count = len([e for e in entities if e.get('pleiades_id')])
+                wikidata_count = len([e for e in entities if e.get('wikidata_url')])
+                wikipedia_count = len([e for e in entities if e.get('wikipedia_url')])
+                britannica_count = len([e for e in entities if e.get('britannica_url')])
+                
+                st.write(f"**🏺 Pleiades:** {pleiades_count}")
+                st.write(f"**🔗 Wikidata:** {wikidata_count}")
+                st.write(f"**📖 Wikipedia:** {wikipedia_count}")
+                st.write(f"**📚 Britannica:** {britannica_count}")
 
-    def render_map(self, geo_entities: List[Dict[str, Any]]):
-        """Render an interactive map of geocoded entities."""
+    def render_pelagios_entity_card(self, entity: Dict):
+        """Render an enhanced card for Pelagios entities."""
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown(f"### **{entity['text']}**")
+            st.write(f"**Type:** {entity['type']}")
+            
+            # Links with icons
+            if entity.get('pleiades_url'):
+                st.markdown(f"🏺 [Pleiades]({entity['pleiades_url']})")
+            
+            if entity.get('pelagios_data', {}).get('peripleo_url'):
+                st.markdown(f"🏛️ [Peripleo]({entity['pelagios_data']['peripleo_url']})")
+            
+            if entity.get('coordinates'):
+                st.write(f"📍 **Coordinates:** {entity.get('latitude', 'N/A'):.4f}, {entity.get('longitude', 'N/A'):.4f}")
+        
+        with col2:
+            pelagios_data = entity.get('pelagios_data', {})
+            
+            if pelagios_data.get('peripleo_description'):
+                st.write("**Description:**")
+                st.write(pelagios_data['peripleo_description'])
+            
+            if pelagios_data.get('temporal_bounds'):
+                st.write(f"**📅 Time Period:** {pelagios_data['temporal_bounds']}")
+            
+            if pelagios_data.get('place_types'):
+                st.write(f"**🏷️ Place Types:** {', '.join(pelagios_data['place_types'])}")
+            
+            if entity.get('geocoding_source'):
+                st.write(f"**🌍 Geocoding Source:** {entity['geocoding_source']}")
+        
+        st.markdown("---")
+
+    def render_enhanced_map(self, geo_entities: List[Dict[str, Any]]):
+        """Enhanced map visualization with better categorization."""
         if not geo_entities:
             return
             
-        # Create DataFrame for plotting
+        # Create enhanced DataFrame for plotting
         map_data = []
         for entity in geo_entities:
-            # Determine source and color
+            # Determine source and styling
             if entity.get('pleiades_url'):
                 source = "Pleiades"
-                color = "brown"
+                color = "#8B4513"
+                symbol = "circle"
+                size = 12
             elif entity.get('pelagios_data'):
                 source = "Peripleo"
-                color = "orange"
+                color = "#D2691E"
+                symbol = "square"
+                size = 10
             elif entity.get('geocoding_source', '').startswith('geopy'):
                 source = "Geopy"
-                color = "blue"
+                color = "#4169E1"
+                symbol = "triangle-up"
+                size = 8
             elif entity.get('geocoding_source', '').startswith('openstreetmap'):
                 source = "OpenStreetMap"
-                color = "green"
+                color = "#228B22"
+                symbol = "diamond"
+                size = 8
             else:
                 source = "Other"
-                color = "gray"
+                color = "#808080"
+                symbol = "circle"
+                size = 6
+            
+            # Enhanced description
+            description_parts = []
+            if entity.get('pelagios_data', {}).get('peripleo_description'):
+                description_parts.append(entity['pelagios_data']['peripleo_description'][:100] + "...")
+            if entity.get('pelagios_data', {}).get('temporal_bounds'):
+                description_parts.append(f"Period: {entity['pelagios_data']['temporal_bounds']}")
             
             map_data.append({
                 'Entity': entity['text'],
@@ -1535,93 +2026,125 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 'Longitude': entity['longitude'],
                 'Source': source,
                 'Color': color,
-                'Description': entity.get('location_name', ''),
-                'Pelagios': 'Yes' if entity.get('pelagios_data') else 'No'
+                'Symbol': symbol,
+                'Size': size,
+                'Description': ' | '.join(description_parts) if description_parts else entity.get('location_name', 'No description'),
+                'Pelagios': '✅' if entity.get('pelagios_data') or entity.get('pleiades_id') else '❌'
             })
         
         df_map = pd.DataFrame(map_data)
         
-        # Create Plotly map
+        # Create enhanced Plotly map
         fig = px.scatter_mapbox(
             df_map,
             lat="Latitude",
             lon="Longitude",
             hover_name="Entity",
-            hover_data=["Type", "Source", "Pelagios"],
+            hover_data={
+                "Type": True,
+                "Source": True,
+                "Pelagios": True,
+                "Description": True,
+                "Latitude": ":.4f",
+                "Longitude": ":.4f"
+            },
             color="Source",
+            color_discrete_map={
+                "Pleiades": "#8B4513",
+                "Peripleo": "#D2691E", 
+                "Geopy": "#4169E1",
+                "OpenStreetMap": "#228B22",
+                "Other": "#808080"
+            },
             size_max=15,
             zoom=2,
-            height=500,
-            title="Geographic Distribution of Entities"
+            height=600,
+            title="🗺️ Geographic Distribution of Historical and Modern Places"
         )
         
         fig.update_layout(
             mapbox_style="open-street-map",
-            margin={"r": 0, "t": 30, "l": 0, "b": 0}
+            margin={"r": 0, "t": 40, "l": 0, "b": 0},
+            showlegend=True
         )
         
         st.plotly_chart(fig, use_container_width=True)
 
-    def render_entity_table(self, entities: List[Dict[str, Any]]):
-        """Render a table of entity details."""
+    def render_enhanced_entity_table(self, entities: List[Dict[str, Any]]):
+        """Enhanced entity table with better formatting."""
         if not entities:
             st.info("No entities found.")
             return
         
-        # Prepare data for table
+        # Prepare enhanced data for table
         table_data = []
         for entity in entities:
             row = {
                 'Entity': entity['text'],
                 'Type': entity['type'],
-                'Links': self.format_entity_links(entity),
-                'Pelagios': 'Yes' if entity.get('pelagios_data') else 'No'
+                'Pelagios': '🏛️' if entity.get('pelagios_data') else '',
+                'Pleiades': '🏺' if entity.get('pleiades_id') else '',
+                'Links': self.format_enhanced_entity_links(entity),
+                'Coordinates': f"{entity['latitude']:.4f}, {entity['longitude']:.4f}" if entity.get('latitude') else '',
+                'Source': entity.get('geocoding_source', '')
             }
             
-            # Add description from various sources
+            # Enhanced description from multiple sources
+            descriptions = []
             if entity.get('pelagios_data', {}).get('peripleo_description'):
-                row['Description'] = entity['pelagios_data']['peripleo_description']
-            elif entity.get('wikidata_description'):
-                row['Description'] = entity['wikidata_description']
-            elif entity.get('wikipedia_description'):
-                row['Description'] = entity['wikipedia_description']
-            elif entity.get('britannica_title'):
-                row['Description'] = entity['britannica_title']
+                descriptions.append(f"Pelagios: {entity['pelagios_data']['peripleo_description'][:100]}...")
+            if entity.get('wikidata_description'):
+                descriptions.append(f"Wikidata: {entity['wikidata_description'][:100]}...")
+            if entity.get('wikipedia_description'):
+                descriptions.append(f"Wikipedia: {entity['wikipedia_description'][:100]}...")
             
-            if entity.get('latitude'):
-                row['Coordinates'] = f"{entity['latitude']:.4f}, {entity['longitude']:.4f}"
-                row['Location'] = entity.get('location_name', '')
+            row['Description'] = ' | '.join(descriptions) if descriptions else entity.get('location_name', '')
             
-            # Add temporal bounds if available
+            # Add temporal information
             if entity.get('pelagios_data', {}).get('temporal_bounds'):
                 row['Period'] = entity['pelagios_data']['temporal_bounds']
             
             table_data.append(row)
         
-        # Create DataFrame and display
+        # Create enhanced DataFrame
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True)
+        
+        # Display with enhanced formatting
+        st.dataframe(
+            df,
+            use_container_width=True,
+            column_config={
+                "Entity": st.column_config.TextColumn("🏷️ Entity", width="medium"),
+                "Type": st.column_config.TextColumn("📂 Type", width="small"),
+                "Pelagios": st.column_config.TextColumn("🏛️", width="small"),
+                "Pleiades": st.column_config.TextColumn("🏺", width="small"),
+                "Links": st.column_config.TextColumn("🔗 Links", width="medium"),
+                "Coordinates": st.column_config.TextColumn("📍 Coordinates", width="medium"),
+                "Source": st.column_config.TextColumn("🌍 Geo Source", width="small"),
+                "Description": st.column_config.TextColumn("📝 Description", width="large"),
+                "Period": st.column_config.TextColumn("📅 Period", width="medium")
+            }
+        )
 
-    def format_entity_links(self, entity: Dict[str, Any]) -> str:
-        """Format entity links for display in table."""
+    def format_enhanced_entity_links(self, entity: Dict[str, Any]) -> str:
+        """Enhanced link formatting with icons."""
         links = []
         if entity.get('pleiades_url'):
-            links.append("Pleiades")
+            links.append("🏺 Pleiades")
         if entity.get('pelagios_data', {}).get('peripleo_url'):
-            links.append("Peripleo")
+            links.append("🏛️ Peripleo")
         if entity.get('wikipedia_url'):
-            links.append("Wikipedia")
+            links.append("📖 Wikipedia")
         if entity.get('wikidata_url'):
-            links.append("Wikidata")
+            links.append("🔗 Wikidata")
         if entity.get('britannica_url'):
-            links.append("Britannica")
-        if entity.get('openstreetmap_url'):
-            links.append("OpenStreetMap")
+            links.append("📚 Britannica")
         return " | ".join(links) if links else "No links"
 
-    def render_export_section(self, entities: List[Dict[str, Any]]):
-        """Render export options for the results."""
-        st.subheader("Pelagios Integration Exports")
+    def render_enhanced_export_section(self, entities: List[Dict[str, Any]]):
+        """Enhanced export section with better organization."""
+        st.subheader("🏛️ Pelagios Integration Exports")
+        st.markdown("*Specialized formats for digital humanities and historical research*")
         
         # Pelagios-specific exports
         col1, col2, col3 = st.columns(3)
@@ -1634,11 +2157,11 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 st.session_state.analysis_title
             )
             st.download_button(
-                label="Download for Recogito",
+                label="📝 Download for Recogito",
                 data=recogito_json,
                 file_name=f"{st.session_state.analysis_title}_recogito.json",
                 mime="application/json",
-                help="Import this file into Recogito for collaborative annotation",
+                help="Import this file into Recogito for collaborative annotation of historical texts",
                 use_container_width=True
             )
         
@@ -1650,118 +2173,162 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 st.session_state.analysis_title
             )
             st.download_button(
-                label="Download TEI XML",
+                label="📜 Download TEI XML",
                 data=tei_xml,
                 file_name=f"{st.session_state.analysis_title}_tei.xml",
                 mime="application/xml",
-                help="TEI XML with place name markup for digital humanities",
+                help="TEI XML with place name markup for digital humanities projects",
                 use_container_width=True
             )
         
         with col3:
-            # Standard JSON-LD export
-            json_data = self.create_jsonld_export(entities)
+            # Enhanced JSON-LD export
+            json_data = self.create_enhanced_jsonld_export(entities)
             json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
             
             st.download_button(
-                label="Download JSON-LD",
+                label="🔗 Download JSON-LD",
                 data=json_str,
                 file_name=f"{st.session_state.analysis_title}_entities.jsonld",
                 mime="application/ld+json",
-                help="Structured linked data export",
+                help="Structured linked data export with Pelagios and Pleiades URIs",
                 use_container_width=True
             )
         
         # Standard exports
-        st.subheader("Standard Exports")
+        st.subheader("📊 Standard Exports")
+        st.markdown("*General-purpose formats for analysis and sharing*")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            # HTML export
+            # Enhanced HTML export
             if st.session_state.html_content:
-                html_template = self.create_html_export(entities)
+                html_template = self.create_enhanced_html_export(entities)
                 
                 st.download_button(
-                    label="Download HTML",
+                    label="🌐 Download HTML",
                     data=html_template,
                     file_name=f"{st.session_state.analysis_title}_entities.html",
                     mime="text/html",
-                    help="Standalone HTML file with highlighted entities",
+                    help="Standalone HTML file with highlighted entities and metadata",
                     use_container_width=True
                 )
         
         with col2:
-            # CSV export for analysis
-            csv_data = self.create_csv_export(entities)
+            # Enhanced CSV export
+            csv_data = self.create_enhanced_csv_export(entities)
             
             st.download_button(
-                label="Download CSV",
+                label="📊 Download CSV",
                 data=csv_data,
                 file_name=f"{st.session_state.analysis_title}_entities.csv",
                 mime="text/csv",
-                help="CSV file for analysis in spreadsheet applications",
+                help="Comprehensive CSV file for analysis in spreadsheet applications",
+                use_container_width=True
+            )
+        
+        with col3:
+            # Summary report
+            summary_report = self.create_summary_report(entities)
+            
+            st.download_button(
+                label="📋 Download Summary",
+                data=summary_report,
+                file_name=f"{st.session_state.analysis_title}_summary.txt",
+                mime="text/plain",
+                help="Human-readable summary of the analysis results",
                 use_container_width=True
             )
 
-    def create_jsonld_export(self, entities: List[Dict[str, Any]]) -> Dict:
-        """Create JSON-LD export format."""
+    def create_enhanced_jsonld_export(self, entities: List[Dict[str, Any]]) -> Dict:
+        """Enhanced JSON-LD export with comprehensive metadata."""
         json_data = {
-            "@context": "http://schema.org/",
+            "@context": {
+                "@vocab": "http://schema.org/",
+                "pelagios": "http://pelagios.org/",
+                "pleiades": "https://pleiades.stoa.org/places/",
+                "crm": "http://www.cidoc-crm.org/cidoc-crm/",
+                "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#"
+            },
             "@type": "TextDigitalDocument",
             "text": st.session_state.processed_text,
             "dateCreated": str(pd.Timestamp.now().isoformat()),
             "title": st.session_state.analysis_title,
+            "generator": {
+                "@type": "SoftwareApplication",
+                "name": "EntityLinker with Pelagios Integration",
+                "version": "2.1",
+                "url": "https://github.com/your-repo/entity-linker"
+            },
             "entities": []
         }
         
-        # Format entities for JSON-LD
+        # Enhanced entity formatting
         for entity in entities:
             entity_data = {
+                "@type": self._get_schema_type(entity['type']),
                 "name": entity['text'],
-                "type": entity['type'],
+                "entityType": entity['type'],
                 "startOffset": entity['start'],
-                "endOffset": entity['end']
+                "endOffset": entity['end'],
+                "confidence": entity.get('confidence', 1.0)
             }
             
-            # Add Pelagios data
+            # Enhanced Pelagios data
             if entity.get('pelagios_data'):
                 pelagios_data = entity['pelagios_data']
                 entity_data['pelagios'] = {
+                    "@type": "pelagios:Place",
                     "peripleo_id": pelagios_data.get('peripleo_id'),
                     "peripleo_url": pelagios_data.get('peripleo_url'),
+                    "title": pelagios_data.get('peripleo_title'),
+                    "description": pelagios_data.get('peripleo_description'),
                     "temporal_bounds": pelagios_data.get('temporal_bounds'),
                     "place_types": pelagios_data.get('place_types', [])
                 }
             
-            # Add various links
+            # Enhanced linking
             same_as = []
             if entity.get('pleiades_url'):
-                same_as.append(entity['pleiades_url'])
+                same_as.append({
+                    "@id": entity['pleiades_url'],
+                    "@type": "pleiades:Place",
+                    "source": "Pleiades"
+                })
             if entity.get('wikidata_url'):
-                same_as.append(entity['wikidata_url'])
+                same_as.append({
+                    "@id": entity['wikidata_url'],
+                    "source": "Wikidata"
+                })
             if entity.get('wikipedia_url'):
-                same_as.append(entity['wikipedia_url'])
-            if entity.get('britannica_url'):
-                same_as.append(entity['britannica_url'])
+                same_as.append({
+                    "@id": entity['wikipedia_url'],
+                    "source": "Wikipedia"
+                })
             
             if same_as:
-                entity_data['sameAs'] = same_as if len(same_as) > 1 else same_as[0]
+                entity_data['sameAs'] = same_as
             
-            # Add description
+            # Enhanced descriptions
+            descriptions = {}
             if entity.get('pelagios_data', {}).get('peripleo_description'):
-                entity_data['description'] = entity['pelagios_data']['peripleo_description']
-            elif entity.get('wikidata_description'):
-                entity_data['description'] = entity['wikidata_description']
-            elif entity.get('wikipedia_description'):
-                entity_data['description'] = entity['wikipedia_description']
+                descriptions['pelagios'] = entity['pelagios_data']['peripleo_description']
+            if entity.get('wikidata_description'):
+                descriptions['wikidata'] = entity['wikidata_description']
+            if entity.get('wikipedia_description'):
+                descriptions['wikipedia'] = entity['wikipedia_description']
             
-            # Add coordinates
+            if descriptions:
+                entity_data['descriptions'] = descriptions
+            
+            # Enhanced coordinates
             if entity.get('latitude') and entity.get('longitude'):
                 entity_data['geo'] = {
                     "@type": "GeoCoordinates",
                     "latitude": entity['latitude'],
-                    "longitude": entity['longitude']
+                    "longitude": entity['longitude'],
+                    "source": entity.get('geocoding_source', 'unknown')
                 }
                 if entity.get('location_name'):
                     entity_data['geo']['name'] = entity['location_name']
@@ -1770,42 +2337,134 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         
         return json_data
 
-    def create_html_export(self, entities: List[Dict[str, Any]]) -> str:
-        """Create standalone HTML export."""
+    def _get_schema_type(self, entity_type: str) -> str:
+        """Map entity types to Schema.org types."""
+        mapping = {
+            'PERSON': 'Person',
+            'ORGANIZATION': 'Organization',
+            'GPE': 'Place',
+            'LOCATION': 'Place',
+            'FACILITY': 'Place',
+            'NORP': 'Place',
+            'ADDRESS': 'PostalAddress'
+        }
+        return mapping.get(entity_type, 'Thing')
+
+    def create_enhanced_html_export(self, entities: List[Dict[str, Any]]) -> str:
+        """Enhanced standalone HTML export with metadata."""
+        # Statistics
+        total_entities = len(entities)
+        pelagios_enhanced = len([e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')])
+        geocoded = len([e for e in entities if e.get('latitude')])
+        linked = len([e for e in entities if any([e.get('wikidata_url'), e.get('wikipedia_url'), e.get('britannica_url')])])
+        
         html_template = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
             <title>Entity Analysis: {st.session_state.analysis_title}</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="generator" content="EntityLinker with Pelagios Integration v2.1">
             <style>
-                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-                .content {{ background: white; padding: 20px; border: 1px solid #ddd; border-radius: 5px; line-height: 1.6; }}
-                .header {{ background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
-                .pelagios-entity {{ border: 2px solid #D2691E; }}
-                .pleiades-entity {{ border: 2px solid #8B4513; }}
-                .statistics {{ background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+                body {{ 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                    max-width: 900px; 
+                    margin: 0 auto; 
+                    padding: 20px; 
+                    background-color: #F5F0DC;
+                }}
+                .header {{ 
+                    background: linear-gradient(135deg, #C4C3A2, #EFCA89); 
+                    padding: 20px; 
+                    border-radius: 10px; 
+                    margin-bottom: 20px; 
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                .content {{ 
+                    background: white; 
+                    padding: 25px; 
+                    border: 1px solid #E0D7C0; 
+                    border-radius: 10px; 
+                    line-height: 1.8; 
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                .statistics {{ 
+                    background: #f9f9f9; 
+                    padding: 20px; 
+                    border-radius: 10px; 
+                    margin-bottom: 20px; 
+                    display: grid; 
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                    gap: 15px;
+                }}
+                .stat-item {{
+                    background: white;
+                    padding: 15px;
+                    border-radius: 5px;
+                    text-align: center;
+                    border: 1px solid #E0D7C0;
+                }}
+                .stat-number {{
+                    font-size: 2em;
+                    font-weight: bold;
+                    color: #C4A998;
+                }}
+                .legend {{
+                    background: #f0f8ff;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                    border-left: 4px solid #C4C3A2;
+                }}
+                .pelagios-entity {{ border: 2px solid #D2691E !important; }}
+                .pleiades-entity {{ border: 2px solid #8B4513 !important; }}
                 @media (max-width: 768px) {{
                     body {{ padding: 10px; }}
-                    .content {{ padding: 15px; }}
-                    .header {{ padding: 10px; }}
+                    .content, .header {{ padding: 15px; }}
+                    .statistics {{ grid-template-columns: 1fr 1fr; }}
                 }}
             </style>
         </head>
         <body>
             <div class="header">
-                <h1>Entity Analysis: {st.session_state.analysis_title}</h1>
-                <p>Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <h1>🏛️ Entity Analysis: {st.session_state.analysis_title}</h1>
+                <p>📅 Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} using EntityLinker v2.1 with Pelagios Integration</p>
             </div>
+            
             <div class="statistics">
-                <h3>Statistics</h3>
-                <p><strong>Total entities:</strong> {len(entities)}</p>
-                <p><strong>Pelagios enhanced:</strong> {len([e for e in entities if e.get('pelagios_data')])}</p>
-                <p><strong>Geocoded places:</strong> {len([e for e in entities if e.get('latitude')])}</p>
+                <div class="stat-item">
+                    <div class="stat-number">{total_entities}</div>
+                    <div>Total Entities</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">{pelagios_enhanced}</div>
+                    <div>🏛️ Pelagios Enhanced</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">{geocoded}</div>
+                    <div>🌍 Geocoded Places</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">{linked}</div>
+                    <div>🔗 Linked Entities</div>
+                </div>
             </div>
+            
+            <div class="legend">
+                <h3>🎨 Visual Legend</h3>
+                <p><strong>🏺 Pleiades entities</strong> (brown border) - Ancient world gazetteer</p>
+                <p><strong>🏛️ Peripleo entities</strong> (orange border) - Historical geography</p>
+                <p><strong>🔗 Other linked entities</strong> (colored background) - General knowledge bases</p>
+            </div>
+            
             <div class="content">
                 {st.session_state.html_content}
+            </div>
+            
+            <div style="margin-top: 30px; padding: 20px; background: #f0f0f0; border-radius: 5px; text-align: center; font-size: 0.9em; color: #666;">
+                Generated by <strong>EntityLinker with Pelagios Integration v2.1</strong><br>
+                Enhanced historical place linking via Pelagios network services
             </div>
         </body>
         </html>
@@ -1813,30 +2472,52 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         
         return html_template
 
-    def create_csv_export(self, entities: List[Dict[str, Any]]) -> str:
-        """Create CSV export for analysis."""
+    def create_enhanced_csv_export(self, entities: List[Dict[str, Any]]) -> str:
+        """Enhanced CSV export with comprehensive data."""
         import io
         
-        # Prepare data for CSV
+        # Prepare comprehensive data for CSV
         csv_data = []
         for entity in entities:
             row = {
                 'Entity': entity['text'],
                 'Type': entity['type'],
-                'Start': entity['start'],
-                'End': entity['end'],
+                'Start_Position': entity['start'],
+                'End_Position': entity['end'],
+                'Confidence': entity.get('confidence', 1.0),
+                
+                # Pelagios data
                 'Pelagios_Enhanced': 'Yes' if entity.get('pelagios_data') else 'No',
+                'Pelagios_Title': entity.get('pelagios_data', {}).get('peripleo_title', ''),
+                'Pelagios_Description': entity.get('pelagios_data', {}).get('peripleo_description', ''),
+                'Temporal_Bounds': entity.get('pelagios_data', {}).get('temporal_bounds', ''),
+                'Place_Types': ', '.join(entity.get('pelagios_data', {}).get('place_types', [])),
+                
+                # Pleiades data
+                'Pleiades_ID': entity.get('pleiades_id', ''),
+                'Pleiades_URL': entity.get('pleiades_url', ''),
+                
+                # Coordinates
                 'Has_Coordinates': 'Yes' if entity.get('latitude') else 'No',
                 'Latitude': entity.get('latitude', ''),
                 'Longitude': entity.get('longitude', ''),
+                'Geocoding_Source': entity.get('geocoding_source', ''),
+                'Location_Name': entity.get('location_name', ''),
+                'Search_Term_Used': entity.get('search_term_used', ''),
+                
+                # External links
                 'Wikidata_URL': entity.get('wikidata_url', ''),
                 'Wikipedia_URL': entity.get('wikipedia_url', ''),
-                'Pleiades_URL': entity.get('pleiades_url', ''),
-                'Peripleo_URL': entity.get('pelagios_data', {}).get('peripleo_url', ''),
-                'Temporal_Bounds': entity.get('pelagios_data', {}).get('temporal_bounds', ''),
-                'Description': (entity.get('pelagios_data', {}).get('peripleo_description') or 
-                              entity.get('wikidata_description') or 
-                              entity.get('wikipedia_description') or '')
+                'Britannica_URL': entity.get('britannica_url', ''),
+                
+                # Descriptions
+                'Wikidata_Description': entity.get('wikidata_description', ''),
+                'Wikipedia_Description': entity.get('wikipedia_description', ''),
+                'Wikipedia_Title': entity.get('wikipedia_title', ''),
+                'Britannica_Title': entity.get('britannica_title', ''),
+                
+                # Peripleo URLs
+                'Peripleo_URL': entity.get('pelagios_data', {}).get('peripleo_url', '')
             }
             csv_data.append(row)
         
@@ -1844,86 +2525,190 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         df = pd.DataFrame(csv_data)
         return df.to_csv(index=False)
 
+    def create_summary_report(self, entities: List[Dict[str, Any]]) -> str:
+        """Create a human-readable summary report."""
+        total_entities = len(entities)
+        pelagios_enhanced = len([e for e in entities if e.get('pelagios_data')])
+        pleiades_linked = len([e for e in entities if e.get('pleiades_id')])
+        geocoded = len([e for e in entities if e.get('latitude')])
+        
+        # Entity type breakdown
+        type_counts = {}
+        for entity in entities:
+            entity_type = entity['type']
+            type_counts[entity_type] = type_counts.get(entity_type, 0) + 1
+        
+        # Pelagios entities
+        pelagios_entities = [e for e in entities if e.get('pelagios_data') or e.get('pleiades_id')]
+        
+        report = f"""
+ENTITY LINKING ANALYSIS SUMMARY
+===============================
+
+Analysis Title: {st.session_state.analysis_title}
+Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+Text Length: {len(st.session_state.processed_text)} characters
+
+OVERVIEW
+--------
+Total Entities Found: {total_entities}
+Pelagios Enhanced: {pelagios_enhanced}
+Pleiades Linked: {pleiades_linked}
+Geocoded Places: {geocoded}
+Success Rate: {(pelagios_enhanced + pleiades_linked) / total_entities * 100:.1f}% for historical places
+
+ENTITY TYPES
+------------
+"""
+        
+        for entity_type, count in sorted(type_counts.items()):
+            percentage = count / total_entities * 100
+            report += f"{entity_type}: {count} ({percentage:.1f}%)\n"
+        
+        if pelagios_entities:
+            report += f"""
+
+PELAGIOS & PLEIADES ENHANCED PLACES
+==================================
+"""
+            for entity in pelagios_entities[:10]:  # Top 10
+                report += f"\n{entity['text']} ({entity['type']})\n"
+                if entity.get('pleiades_id'):
+                    report += f"  🏺 Pleiades ID: {entity['pleiades_id']}\n"
+                if entity.get('pelagios_data', {}).get('temporal_bounds'):
+                    report += f"  📅 Period: {entity['pelagios_data']['temporal_bounds']}\n"
+                if entity.get('latitude'):
+                    report += f"  📍 Coordinates: {entity['latitude']:.4f}, {entity['longitude']:.4f}\n"
+                if entity.get('pelagios_data', {}).get('peripleo_description'):
+                    desc = entity['pelagios_data']['peripleo_description'][:100] + "..."
+                    report += f"  📝 Description: {desc}\n"
+        
+        report += f"""
+
+SOURCES USED
+============
+- Pelagios Peripleo: Historical geography search
+- Pleiades Gazetteer: Ancient world places (direct API)
+- Wikidata: General knowledge graph
+- Wikipedia: Encyclopedia articles
+- Britannica: Academic encyclopedia
+- OpenStreetMap/Nominatim: Modern geocoding
+- Geopy: Python geocoding libraries
+
+METHODOLOGY
+===========
+1. spaCy Named Entity Recognition with enhanced validation
+2. Pelagios network integration for historical places
+3. Multi-source entity linking with fallback strategies
+4. Contextual geocoding with geographical awareness
+5. Export to standard formats (TEI XML, Recogito JSON, JSON-LD)
+
+This analysis was generated using EntityLinker v2.1 with Pelagios Integration.
+For more information, visit: https://github.com/your-repo/entity-linker
+"""
+        
+        return report
+
     def run(self):
-        """Main application runner."""
-        # Add custom CSS for Farrow & Ball Slipper Satin background
+        """Enhanced main application runner."""
+        # Enhanced CSS styling
         st.markdown("""
         <style>
         .stApp {
-            background-color: #F5F0DC !important;
+            background: linear-gradient(135deg, #F5F0DC 0%, #F8F5E4 100%) !important;
         }
         .main .block-container {
-            background-color: #F5F0DC !important;
+            background-color: transparent !important;
+            padding-top: 2rem;
         }
         .stSidebar {
-            background-color: #F5F0DC !important;
+            background: linear-gradient(180deg, #F5F0DC 0%, #E8E1D4 100%) !important;
         }
-        .stSelectbox > div > div {
+        
+        /* Enhanced form styling */
+        .stSelectbox > div > div, .stTextInput > div > div > input, .stTextArea > div > div > textarea {
             background-color: white !important;
+            border: 1px solid #E0D7C0 !important;
+            border-radius: 8px !important;
         }
-        .stTextInput > div > div > input {
-            background-color: white !important;
-        }
-        .stTextArea > div > div > textarea {
-            background-color: white !important;
-        }
+        
+        /* Enhanced expander styling */
         .stExpander {
             background-color: white !important;
             border: 1px solid #E0D7C0 !important;
-            border-radius: 4px !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
         }
+        
+        /* Enhanced dataframe styling */
         .stDataFrame {
             background-color: white !important;
+            border-radius: 8px !important;
+            overflow: hidden !important;
         }
-        </style>
-        """, unsafe_allow_html=True)
         
-        # Render header
-        self.render_header()
-        
-        # Render sidebar
-        self.render_sidebar()
-        
-        # Single column layout for mobile compatibility
-        # Input section
-        text_input, analysis_title = self.render_input_section()
-        
-        # Process button with custom Farrow & Ball Dead Salmon color
-        st.markdown("""
-        <style>
+        /* Enhanced button styling */
         .stButton > button {
-            background-color: #C4A998 !important;
+            background: linear-gradient(135deg, #C4A998 0%, #B5998A 100%) !important;
             color: black !important;
             border: none !important;
-            border-radius: 4px !important;
-            font-weight: 500 !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            transition: all 0.3s ease !important;
         }
         .stButton > button:hover {
-            background-color: #B5998A !important;
-            color: black !important;
+            background: linear-gradient(135deg, #B5998A 0%, #A68977 100%) !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
         }
-        .stButton > button:active {
-            background-color: #A68977 !important;
-            color: black !important;
+        
+        /* Enhanced metric styling */
+        .metric-container {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #E0D7C0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         </style>
         """, unsafe_allow_html=True)
         
-        if st.button("Process Text", type="primary", use_container_width=True):
+        # Render enhanced header
+        self.render_header()
+        
+        # Render enhanced sidebar
+        self.render_sidebar()
+        
+        # Enhanced input section
+        text_input, analysis_title = self.render_input_section()
+        
+        # Enhanced process button
+        if st.button("🚀 Process Text with Enhanced Pelagios Integration", type="primary", use_container_width=True):
             if text_input.strip():
                 self.process_text(text_input, analysis_title)
             else:
-                st.warning("Please enter some text to analyze.")
+                st.warning("⚠️ Please enter some text to analyze.")
         
-        # Add some spacing
+        # Add separator
         st.markdown("---")
         
-        # Results section
+        # Enhanced results section
         self.render_results()
+        
+        # Footer
+        st.markdown("""
+        <div style="margin-top: 50px; padding: 20px; background: white; border-radius: 10px; border: 1px solid #E0D7C0; text-align: center;">
+            <p style="color: #666; margin: 0;"><strong>EntityLinker v2.1</strong> with Enhanced Pelagios Integration</p>
+            <p style="color: #666; margin: 5px 0 0 0; font-size: 0.9em;">
+                Linking modern NLP with historical geography through the Pelagios network
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 def main():
-    """Main function to run the Streamlit application."""
+    """Main function to run the enhanced Streamlit application."""
     app = StreamlitEntityLinker()
     app.run()
 
