@@ -893,11 +893,15 @@ class EntityLinker:
         return False
 
     def link_to_wikidata(self, entities):
-        """Add basic Wikidata linking."""
+        """Add basic Wikidata linking - ONLY for entities without Pelagios data."""
         import requests
         import time
         
         for entity in entities:
+            # SKIP if already has Pelagios data - prioritize Pelagios!
+            if entity.get('pelagios_data'):
+                continue
+                
             try:
                 url = "https://www.wikidata.org/w/api.php"
                 params = {
@@ -924,14 +928,14 @@ class EntityLinker:
         return entities
 
     def link_to_wikipedia(self, entities):
-        """Add Wikipedia linking for entities without Wikidata links."""
+        """Add Wikipedia linking - ONLY for entities without Pelagios or Wikidata links."""
         import requests
         import time
         import urllib.parse
         
         for entity in entities:
-            # Skip if already has Wikidata link
-            if entity.get('wikidata_url'):
+            # SKIP if already has Pelagios data OR Wikidata link - prioritize Pelagios!
+            if entity.get('pelagios_data') or entity.get('wikidata_url'):
                 continue
                 
             try:
@@ -975,14 +979,16 @@ class EntityLinker:
         return entities
 
     def link_to_britannica(self, entities):
-        """Add basic Britannica linking.""" 
+        """Add Britannica linking - ONLY as final fallback.""" 
         import requests
         import re
         import time
         
         for entity in entities:
-            # Skip if already has Wikidata or Wikipedia link
-            if entity.get('wikidata_url') or entity.get('wikipedia_url'):
+            # SKIP if already has Pelagios, Wikidata, OR Wikipedia links - prioritize all others!
+            if (entity.get('pelagios_data') or 
+                entity.get('wikidata_url') or 
+                entity.get('wikipedia_url')):
                 continue
                 
             try:
@@ -1241,38 +1247,38 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 progress_bar.progress(15)
                 entities = self.cached_extract_entities(text)
                 
-                # Step 2: Link to Wikidata (cached)
-                status_text.text("Linking to Wikidata...")
-                progress_bar.progress(30)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_wikidata(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 3: Link to Wikipedia (cached)
-                status_text.text("Linking to Wikipedia...")
-                progress_bar.progress(45)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_wikipedia(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 4: Link to Britannica (cached)
-                status_text.text("Linking to Britannica...")
-                progress_bar.progress(55)
-                entities_json = json.dumps(entities, default=str)
-                linked_entities_json = self.cached_link_to_britannica(entities_json)
-                entities = json.loads(linked_entities_json)
-                
-                # Step 5: Enhance with Pelagios (NEW!)
+                # Step 2: PRIORITIZE Pelagios/Peripleo FIRST!
                 status_text.text("Enhancing with Pelagios historical data...")
-                progress_bar.progress(70)
+                progress_bar.progress(35)
                 entities_json = json.dumps(entities, default=str)
                 enhanced_entities_json = self.cached_enhance_with_pelagios(entities_json)
                 entities = json.loads(enhanced_entities_json)
                 
-                # Step 6: Get coordinates
+                # Step 3: Get coordinates (many will come from Pelagios already)
                 status_text.text("Getting coordinates...")
-                progress_bar.progress(85)
+                progress_bar.progress(50)
                 entities = self.entity_linker.get_coordinates(entities)
+                
+                # Step 4: Link to Wikidata (only for entities WITHOUT Pelagios data)
+                status_text.text("Linking to Wikidata...")
+                progress_bar.progress(65)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_wikidata(entities_json)
+                entities = json.loads(linked_entities_json)
+                
+                # Step 5: Link to Wikipedia (only for entities still needing links)
+                status_text.text("Linking to Wikipedia...")
+                progress_bar.progress(75)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_wikipedia(entities_json)
+                entities = json.loads(linked_entities_json)
+                
+                # Step 6: Link to Britannica (final fallback)
+                status_text.text("Linking to Britannica...")
+                progress_bar.progress(85)
+                entities_json = json.dumps(entities, default=str)
+                linked_entities_json = self.cached_link_to_britannica(entities_json)
+                entities = json.loads(linked_entities_json)
                 
                 # Step 7: Generate visualization
                 status_text.text("Generating visualization...")
@@ -1290,15 +1296,15 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                 progress_bar.empty()
                 status_text.empty()
                 
-                # Show summary
+                # Show summary with Pelagios emphasis
                 pelagios_enhanced = len([e for e in entities if e.get('pelagios_data')])
                 geocoded = len([e for e in entities if e.get('latitude')])
                 
                 st.success(f"Processing complete! Found {len(entities)} entities")
                 if pelagios_enhanced > 0:
-                    st.info(f"{pelagios_enhanced} places enhanced with Pelagios data")
+                    st.info(f"🏛️ {pelagios_enhanced} places enhanced with Pelagios historical data")
                 if geocoded > 0:
-                    st.info(f"{geocoded} places geocoded with coordinates")
+                    st.info(f"🗺️ {geocoded} places geocoded with coordinates")
                 
             except Exception as e:
                 st.error(f"Error processing text: {e}")
@@ -1369,22 +1375,22 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
             
             tooltip = " | ".join(tooltip_parts)
             
-            # Create highlighted span with link (priority: Pleiades > Peripleo > Wikipedia > Wikidata > Britannica > OpenStreetMap)
+            # Create highlighted span with link (PRIORITY ORDER: Pleiades > Peripleo > Wikipedia > Wikidata > Britannica > OpenStreetMap)
             if entity.get('pleiades_url'):
                 url = html_module.escape(entity["pleiades_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 2px solid #8B4513;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 3px solid #8B4513;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('pelagios_data', {}).get('peripleo_url'):
                 url = html_module.escape(entity["pelagios_data"]["peripleo_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 2px solid #D2691E;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 3px solid #D2691E;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('wikipedia_url'):
                 url = html_module.escape(entity["wikipedia_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 1px solid #666;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('wikidata_url'):
                 url = html_module.escape(entity["wikidata_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 1px solid #999;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('britannica_url'):
                 url = html_module.escape(entity["britannica_url"])
-                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
+                replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black; border: 1px solid #CCC;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
             elif entity.get('openstreetmap_url'):
                 url = html_module.escape(entity["openstreetmap_url"])
                 replacement = f'<a href="{url}" style="background-color: {color}; padding: 2px 4px; border-radius: 3px; text-decoration: none; color: black;" target="_blank" title="{tooltip}">{escaped_entity_text}</a>'
@@ -1424,11 +1430,13 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         # Legend
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown("**Pleiades** (brown border)")
+            st.markdown("🥇 **Pleiades** (thick brown border)")
         with col2:
-            st.markdown("**Peripleo** (orange border)")
+            st.markdown("🥈 **Peripleo** (thick orange border)")
         with col3:
-            st.markdown("**Other sources** (no border)")
+            st.markdown("🥉 **Other sources** (thin borders)")
+        
+        st.markdown("**Linking Priority:** Pelagios/Pleiades → Peripleo → Wikipedia → Wikidata → Britannica")
         
         if st.session_state.html_content:
             st.markdown(
@@ -1603,12 +1611,14 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
         st.dataframe(df, use_container_width=True)
 
     def format_entity_links(self, entity: Dict[str, Any]) -> str:
-        """Format entity links for display in table."""
+        """Format entity links for display in table - PRIORITIZE PELAGIOS."""
         links = []
+        # PELAGIOS FIRST!
         if entity.get('pleiades_url'):
-            links.append("Pleiades")
+            links.append("🏛️ Pleiades")
         if entity.get('pelagios_data', {}).get('peripleo_url'):
-            links.append("Peripleo")
+            links.append("🗺️ Peripleo")
+        # Then others
         if entity.get('wikipedia_url'):
             links.append("Wikipedia")
         if entity.get('wikidata_url'):
@@ -1734,10 +1744,12 @@ Our path then led us through the desert of Khorasan to the city of Balkh, which 
                     "place_types": pelagios_data.get('place_types', [])
                 }
             
-            # Add various links
+            # Add various links - PRIORITIZE PELAGIOS LINKS FIRST!
             same_as = []
             if entity.get('pleiades_url'):
                 same_as.append(entity['pleiades_url'])
+            if entity.get('pelagios_data', {}).get('peripleo_url'):
+                same_as.append(entity['pelagios_data']['peripleo_url'])
             if entity.get('wikidata_url'):
                 same_as.append(entity['wikidata_url'])
             if entity.get('wikipedia_url'):
