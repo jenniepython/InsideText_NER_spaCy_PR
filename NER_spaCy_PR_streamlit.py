@@ -2082,8 +2082,8 @@ class StreamlitEntityLinker:
             row = {
                 'Entity': entity['text'],
                 'Type': entity['type'],
-                'Pelagios': '✓' if entity.get('pelagios_data') else '',
-                'Pleiades': '✓' if entity.get('pleiades_id') else '',
+                'Pelagios': '✅' if entity.get('pelagios_data') else '',
+                'Pleiades': '✅' if entity.get('pleiades_id') else '',
                 'Links': self.format_enhanced_entity_links(entity),
                 'Coordinates': f"{entity['latitude']:.4f}, {entity['longitude']:.4f}" if entity.get('latitude') else '',
                 'Source': entity.get('geocoding_source', '')
