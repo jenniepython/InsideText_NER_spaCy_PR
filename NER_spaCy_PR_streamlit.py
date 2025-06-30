@@ -993,35 +993,41 @@ class EntityLinker:
     
     def _detect_geographical_context(self, text: str, entities: List[Dict[str, Any]]) -> List[str]:
         """
-        Use local Ollama LLM to infer geographical context from the text.
-        Requires Ollama running locally (e.g., `ollama run mistral`).
+        Use mistralai/Mistral-7B-Instruct-v0.1 to infer geographical context from text.
+        Requires at least 16 GB VRAM or patience on CPU.
         """
+        import torch
+        import re
+        from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+    
         try:
-            import streamlit as st
-            from ollama import Client
-            import re
+            model_id = "mistralai/Mistral-7B-Instruct-v0.1"
     
-            with st.spinner("🤖 Getting geographical context from LLM (Ollama)..."):
-                client = Client(host='http://localhost:11434')
+            # Load model and tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto"
+            )
     
-                short_text = text[:1500]  # keep within LLM limits
-                prompt = (
-                    "Extract up to 5 place names (regions, cities, countries, or historical areas) mentioned or implied "
-                    "in the following text. Just return a list, comma-separated:\n\n"
-                    f"{short_text}"
-                )
+            prompt = (
+                "You are a helpful assistant. List up to 5 place names (regions, countries, or historical locations) "
+                "mentioned or implied in the following text. Only return the place names, separated by commas.\n\n"
+                f"{text[:1500]}"
+            )
     
-                response = client.chat(model='mistral', messages=[
-                    {"role": "user", "content": prompt}
-                ])
-                result = response['message']['content']
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            outputs = model.generate(**inputs, max_new_tokens=100, temperature=0.2)
+            decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
     
-                # Clean up and extract
-                places = [p.strip() for p in re.split(r'[,\n]', result) if len(p.strip()) > 2]
-                return places[:5]
+            # Extract place names from LLM output
+            places = [p.strip() for p in re.split(r'[,\n]', decoded) if len(p.strip()) > 2]
+            return places[:5]
         except Exception as e:
-            st.warning(f"Ollama context detection failed: {e}")
+            print(f"Mistral inference failed: {e}")
             return []
+
 
     def _try_contextual_geocoding(self, entity, context_clues):
         """
