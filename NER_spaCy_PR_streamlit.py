@@ -126,12 +126,12 @@ import hashlib
 
 
 class PelagiosIntegration:
-    """Fixed and improved integration class for Pelagios services."""
+    """Completely Fixed Pelagios integration focusing on what actually works."""
     
     def __init__(self):
         """Initialize Pelagios integration with working endpoints."""
-        # Updated endpoints based on current Pelagios infrastructure
-        self.peripleo_search_url = "https://peripleo.pelagios.org/api/search"
+        # Use the working legacy API endpoints
+        self.peripleo_legacy_url = "http://peripleo.pelagios.org/peripleo/search"
         self.pleiades_base_url = "https://pleiades.stoa.org"
         self.pleiades_search_url = "https://pleiades.stoa.org/search_rss"
         
@@ -142,176 +142,191 @@ class PelagiosIntegration:
             'Accept': 'application/json, application/xml, text/xml, */*'
         })
         
-    def search_peripleo(self, place_name: str, limit: int = 5) -> List[Dict]:
+    def search_peripleo_legacy(self, place_name: str, limit: int = 5) -> List[Dict]:
         """
-        Search Peripleo for historical place information with multiple fallback strategies.
+        Search the legacy Peripleo API with proper parameters.
         """
-        print(f"Searching Peripleo for: '{place_name}'")
+        print(f"Searching Peripleo legacy API for: '{place_name}'")
         
-        # Try multiple search strategies
-        search_variants = [
-            place_name,
-            f"{place_name} ancient",
-            place_name.replace(' ', '+')  # URL encoding variant
-        ]
+        # Use the documented legacy API parameters
+        search_params = {
+            'query': place_name,
+            'types': 'place',  # Only search for places
+            'limit': limit,
+            'prettyprint': 'true'  # For easier debugging
+        }
         
-        for variant in search_variants:
-            # Try different parameter combinations that Peripleo might accept
-            param_sets = [
-                {'q': variant, 'limit': limit},
-                {'query': variant, 'limit': limit},
-                {'search': variant, 'limit': limit},
-                {'text': variant, 'limit': limit},
-                {'title': variant, 'limit': limit}
-            ]
+        try:
+            print(f"Making request to: {self.peripleo_legacy_url}")
+            print(f"Parameters: {search_params}")
             
-            for params in param_sets:
-                try:
-                    print(f"Trying Peripleo with params: {params}")
-                    response = self.session.get(
-                        self.peripleo_search_url,
-                        params=params,
-                        timeout=15
-                    )
-                    
-                    print(f"Peripleo request: {response.url}")
-                    print(f"Status: {response.status_code}")
-                    
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            print(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-                            print(f"Response data sample: {str(data)[:200]}...")
-                            
-                            # Handle different response structures
-                            items = self._extract_items_from_response(data)
-                            
-                            if items:
-                                print(f"Found {len(items)} items via Peripleo")
-                                # Prioritize Pleiades sources
-                                pleiades_items = [item for item in items 
-                                                if self._is_pleiades_source(item)]
-                                
-                                if pleiades_items:
-                                    print(f"Found {len(pleiades_items)} Pleiades items")
-                                    return pleiades_items[:limit]
-                                return items[:limit]
-                                
-                        except json.JSONDecodeError as e:
-                            print(f"JSON decode error: {e}")
-                            print(f"Response text: {response.text[:500]}...")
-                            # Try as XML/RSS
-                            try:
-                                return self._parse_xml_response(response.text, place_name)
-                            except Exception as xml_e:
-                                print(f"XML parsing also failed: {xml_e}")
-                                pass
-                    else:
-                        print(f"HTTP error: {response.status_code}")
-                        print(f"Response: {response.text[:200]}...")
-                                
-                except requests.RequestException as e:
-                    print(f"Peripleo request failed: {e}")
-                    continue
-                except Exception as e:
-                    print(f"Unexpected error: {e}")
-                    continue
+            response = self.session.get(
+                self.peripleo_legacy_url,
+                params=search_params,
+                timeout=30  # Longer timeout for potentially slow API
+            )
+            
+            print(f"Response status: {response.status_code}")
+            print(f"Full URL: {response.url}")
+            
+            if response.status_code == 200:
+                print(f"Success! Response length: {len(response.text)} chars")
                 
-                time.sleep(0.3)  # Rate limiting between attempts
-        
-        print(f"No results found for '{place_name}' via Peripleo")
-        return []
-    
-    def _extract_items_from_response(self, data: Any) -> List[Dict]:
-        """Extract items from various possible response structures."""
-        if isinstance(data, list):
-            return data
-        elif isinstance(data, dict):
-            # Try common response keys
-            for key in ['items', 'results', 'places', 'features', 'hits', 'docs', 'data']:
-                if key in data:
-                    items = data[key]
-                    if isinstance(items, list):
-                        return items
-                    elif isinstance(items, dict):
-                        return [items]
+                # Try to parse as JSON first
+                try:
+                    data = response.json()
+                    print(f"JSON Response structure: {type(data)}")
+                    
+                    if isinstance(data, dict):
+                        print(f"JSON keys: {list(data.keys())}")
+                        
+                        # Look for results in various possible keys
+                        items = []
+                        for key in ['items', 'results', 'places', 'features']:
+                            if key in data and isinstance(data[key], list):
+                                items = data[key]
+                                print(f"Found {len(items)} items in '{key}' field")
+                                break
+                        
+                        if items:
+                            # Process the items
+                            processed_items = []
+                            for item in items[:limit]:
+                                processed_item = self._process_peripleo_item(item)
+                                if processed_item:
+                                    processed_items.append(processed_item)
+                                    print(f"Processed: {processed_item.get('title', 'Untitled')}")
+                            
+                            return processed_items
+                        else:
+                            print(f"No items found in response: {str(data)[:200]}...")
+                    
+                    elif isinstance(data, list):
+                        print(f"Direct list response with {len(data)} items")
+                        processed_items = []
+                        for item in data[:limit]:
+                            processed_item = self._process_peripleo_item(item)
+                            if processed_item:
+                                processed_items.append(processed_item)
+                        return processed_items
+                
+                except json.JSONDecodeError:
+                    print("Response is not JSON, trying as XML/HTML...")
+                    print(f"Response preview: {response.text[:500]}...")
+                    
+                    # Check if it's an error page or maintenance message
+                    if "maintenance" in response.text.lower() or "gateway" in response.text.lower():
+                        print("API appears to be under maintenance")
+                        return []
+                    
+                    # Try to parse as XML (unlikely but possible)
+                    return self._try_parse_xml_response(response.text, place_name)
             
-            # If data itself looks like an item
-            if any(key in data for key in ['title', 'name', 'label', 'uri', 'identifier']):
-                return [data]
+            else:
+                print(f"HTTP Error {response.status_code}")
+                print(f"Error response: {response.text[:300]}...")
+                
+        except requests.RequestException as e:
+            print(f"Request failed: {e}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
         
         return []
     
-    def _is_pleiades_source(self, item: Dict) -> bool:
-        """Check if an item comes from Pleiades."""
-        item_str = str(item).lower()
-        return (
-            item.get('source_gazetteer') == 'pleiades' or
-            'pleiades.stoa.org' in item_str or
-            item.get('gazetteer') == 'pleiades' or
-            'pleiades' in str(item.get('source', '')).lower()
-        )
+    def _process_peripleo_item(self, item: Dict) -> Optional[Dict]:
+        """Process a Peripleo API response item."""
+        try:
+            # Extract basic information
+            processed = {
+                'title': item.get('title', item.get('label', item.get('name', ''))),
+                'identifier': item.get('identifier', item.get('uri', item.get('id', ''))),
+                'description': item.get('description', ''),
+                'object_type': item.get('object_type', 'place'),
+                'source_gazetteer': 'peripleo'
+            }
+            
+            # Extract temporal bounds
+            if item.get('temporal_bounds'):
+                tb = item['temporal_bounds']
+                if isinstance(tb, dict):
+                    start = tb.get('start', '')
+                    end = tb.get('end', '')
+                    if start or end:
+                        processed['temporal_bounds'] = f"{start}-{end}" if start != end else str(start)
+            
+            # Extract geographical bounds
+            if item.get('geo_bounds'):
+                gb = item['geo_bounds']
+                if isinstance(gb, dict) and all(k in gb for k in ['min_lat', 'max_lat', 'min_lon', 'max_lon']):
+                    # Calculate centroid
+                    lat = (gb['min_lat'] + gb['max_lat']) / 2
+                    lon = (gb['min_lon'] + gb['max_lon']) / 2
+                    processed['geo_bounds'] = {
+                        'centroid': {'lat': lat, 'lon': lon}
+                    }
+            
+            # Check if this is from Pleiades
+            identifier = processed['identifier']
+            if 'pleiades.stoa.org' in identifier:
+                processed['source_gazetteer'] = 'pleiades'
+                if '/places/' in identifier:
+                    processed['source_id'] = identifier.split('/places/')[-1].rstrip('/')
+            
+            return processed
+            
+        except Exception as e:
+            print(f"Error processing item {item}: {e}")
+            return None
     
-    def _parse_xml_response(self, xml_text: str, place_name: str) -> List[Dict]:
-        """Parse XML/RSS response as fallback."""
+    def _try_parse_xml_response(self, xml_text: str, place_name: str) -> List[Dict]:
+        """Try to parse XML response (for RSS feeds, etc.)."""
         try:
             root = ET.fromstring(xml_text)
             items = []
             
-            # Handle RSS format
+            # Look for RSS items
             for item in root.findall('.//item'):
                 title_elem = item.find('title')
                 link_elem = item.find('link')
-                desc_elem = item.find('description')
                 
                 if title_elem is not None and link_elem is not None:
-                    title = title_elem.text
-                    link = link_elem.text
+                    title = title_elem.text or ''
+                    link = link_elem.text or ''
                     
-                    # Check if this is relevant to our search
                     if place_name.lower() in title.lower():
-                        parsed_item = {
+                        items.append({
                             'title': title,
                             'identifier': link,
-                            'description': desc_elem.text if desc_elem is not None else '',
-                            'source_gazetteer': 'unknown'
-                        }
-                        
-                        # Check if it's from Pleiades
-                        if 'pleiades.stoa.org' in link:
-                            parsed_item['source_gazetteer'] = 'pleiades'
-                            if '/places/' in link:
-                                parsed_item['source_id'] = link.split('/places/')[-1].rstrip('/')
-                        
-                        items.append(parsed_item)
+                            'description': '',
+                            'source_gazetteer': 'pleiades' if 'pleiades' in link else 'unknown'
+                        })
             
             return items
             
-        except ET.ParseError as e:
-            print(f"XML Parse error: {e}")
+        except ET.ParseError:
             return []
     
     def search_pleiades_directly(self, place_name: str) -> List[Dict]:
         """
-        Direct search of Pleiades gazetteer as primary fallback.
+        Direct search of Pleiades gazetteer - this usually works!
         """
         print(f"Searching Pleiades directly for: '{place_name}'")
         
         try:
-            # Try the RSS search first
             params = {
                 'SearchableText': place_name,
                 'portal_type': 'Place',
-                'review_state': 'published'  # Only published places
+                'review_state': 'published',
+                'sort_on': 'effective'
             }
             
             response = self.session.get(
                 self.pleiades_search_url,
                 params=params,
-                timeout=15
+                timeout=20
             )
             
-            print(f"Pleiades request: {response.url}")
+            print(f"Pleiades URL: {response.url}")
             print(f"Status: {response.status_code}")
             
             if response.status_code == 200:
@@ -320,6 +335,7 @@ class PelagiosIntegration:
                 try:
                     # Parse RSS/XML response
                     root = ET.fromstring(response.text)
+                    print(f"Parsed XML successfully")
                     
                     for item in root.findall('.//item'):
                         title_elem = item.find('title')
@@ -334,10 +350,11 @@ class PelagiosIntegration:
                             # Extract Pleiades ID
                             pleiades_id = None
                             if '/places/' in link:
-                                pleiades_id = link.split('/places/')[-1].rstrip('/')
+                                pleiades_id = link.split('/places/')[-1].rstrip('/').split('?')[0]
                             
-                            if pleiades_id:
-                                # Get additional details from JSON API
+                            if pleiades_id and pleiades_id.isdigit():
+                                print(f"Found Pleiades place: {title} (ID: {pleiades_id})")
+                                
                                 item_data = {
                                     'title': title,
                                     'identifier': link,
@@ -353,21 +370,18 @@ class PelagiosIntegration:
                                     item_data.update(json_details)
                                 
                                 items.append(item_data)
-                                print(f"Found Pleiades item: {title} (ID: {pleiades_id})")
                 
                 except ET.ParseError as e:
                     print(f"Error parsing Pleiades RSS: {e}")
+                    print(f"Response preview: {response.text[:300]}...")
                 
-                print(f"Found {len(items)} items via direct Pleiades search")
+                print(f"Found {len(items)} Pleiades items")
                 return items
             else:
-                print(f"Pleiades search failed with status: {response.status_code}")
-                print(f"Response: {response.text[:200]}...")
+                print(f"Pleiades search failed: {response.status_code}")
                 
-        except requests.RequestException as e:
-            print(f"Direct Pleiades search failed: {e}")
         except Exception as e:
-            print(f"Unexpected error in Pleiades search: {e}")
+            print(f"Pleiades search error: {e}")
         
         return []
     
@@ -376,92 +390,100 @@ class PelagiosIntegration:
         try:
             json_url = f"{self.pleiades_base_url}/places/{pleiades_id}/json"
             print(f"Fetching Pleiades JSON: {json_url}")
-            response = self.session.get(json_url, timeout=10)
+            
+            response = self.session.get(json_url, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
                 details = {}
                 
-                # Extract coordinates
+                # Extract coordinates from reprPoint
                 if data.get('reprPoint'):
                     coords = data['reprPoint']
-                    details['geo_bounds'] = {
-                        'centroid': {
-                            'lat': coords[1],  # reprPoint is [lon, lat]
-                            'lon': coords[0]
+                    if len(coords) >= 2:
+                        details['geo_bounds'] = {
+                            'centroid': {
+                                'lat': float(coords[1]),  # reprPoint is [lon, lat]
+                                'lon': float(coords[0])
+                            }
                         }
-                    }
-                    print(f"Found coordinates: {coords[1]}, {coords[0]}")
-                
-                # Extract temporal information
-                if data.get('connectsWith') or data.get('timePeriods'):
-                    # This would need more complex parsing for actual temporal bounds
-                    details['temporal_bounds'] = 'Ancient period'
+                        print(f"Found coordinates: {coords[1]}, {coords[0]}")
                 
                 # Extract place types
                 if data.get('placeTypes'):
-                    details['place_types'] = [pt.get('title', '') for pt in data['placeTypes']]
+                    place_types = []
+                    for pt in data['placeTypes']:
+                        if isinstance(pt, dict) and pt.get('title'):
+                            place_types.append(pt['title'])
+                    if place_types:
+                        details['place_types'] = place_types
+                
+                # Extract temporal information (simplified)
+                if data.get('attestations') or data.get('connectsWith'):
+                    details['temporal_bounds'] = 'Ancient period'
                 
                 return details
             else:
                 print(f"Failed to get Pleiades JSON: {response.status_code}")
                 
         except Exception as e:
-            print(f"Error getting Pleiades JSON details for {pleiades_id}: {e}")
+            print(f"Error getting Pleiades JSON for {pleiades_id}: {e}")
         
         return None
     
     def enhance_entities_with_pelagios(self, entities: List[Dict]) -> List[Dict]:
         """
-        Enhanced entity enrichment with improved search and fallbacks.
+        Enhanced entity enrichment focusing on what actually works.
         """
-        # Expanded place types to catch more entities
-        place_types = ['GPE', 'LOCATION', 'FACILITY', 'ORG', 'PERSON', 'NORP']
+        print(f"\nStarting Pelagios enhancement for {len(entities)} entities")
+        
+        # Focus on place-like entities
+        place_types = ['GPE', 'LOCATION', 'FACILITY']
+        enhanced_count = 0
         
         for entity in entities:
             entity_text = entity['text'].strip()
             entity_type = entity['type']
             
-            print(f"\n=== Processing entity: '{entity_text}' (type: {entity_type}) ===")
+            print(f"\nProcessing: '{entity_text}' (type: {entity_type})")
             
-            if entity_type in place_types:
-                # Skip very short or common words
-                if len(entity_text) <= 2 or entity_text.lower() in ['the', 'and', 'or', 'of', 'in', 'to']:
-                    print(f"Skipping short/common word: '{entity_text}'")
+            if entity_type in place_types and len(entity_text) > 2:
+                # Skip obvious non-places
+                skip_terms = ['the', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'at', 'by']
+                if entity_text.lower() in skip_terms:
+                    print(f"Skipping common word: '{entity_text}'")
                     continue
                 
-                # Try Peripleo first
-                print("Trying Peripleo search...")
-                peripleo_results = self.search_peripleo(entity_text)
+                # Strategy 1: Try Pleiades direct search FIRST (most reliable)
+                print("Trying Pleiades direct search...")
+                results = self.search_pleiades_directly(entity_text)
                 
-                # If no results from Peripleo, try direct Pleiades search
-                if not peripleo_results:
-                    print("No Peripleo results, trying direct Pleiades search...")
-                    peripleo_results = self.search_pleiades_directly(entity_text)
+                # Strategy 2: Try Peripleo legacy API if Pleiades fails
+                if not results:
+                    print("Trying Peripleo legacy API...")
+                    results = self.search_peripleo_legacy(entity_text)
                 
-                # If still no results, try with variations
-                if not peripleo_results and len(entity_text) > 3:
-                    print("Trying search variations...")
+                # Strategy 3: Try variations if still no results
+                if not results and len(entity_text) > 3:
+                    print("Trying variations...")
                     variations = [
-                        f"{entity_text} city",
                         f"{entity_text} ancient",
-                        entity_text.replace('the ', '').strip(),
-                        entity_text.split()[0] if ' ' in entity_text else entity_text  # First word only
+                        entity_text.split()[0] if ' ' in entity_text else None
                     ]
                     
                     for variation in variations:
-                        if variation != entity_text and len(variation) > 2:
+                        if variation and variation != entity_text and len(variation) > 2:
                             print(f"Trying variation: '{variation}'")
-                            peripleo_results = self.search_pleiades_directly(variation)
-                            if peripleo_results:
-                                print(f"Found results with variation: '{variation}'")
+                            results = self.search_pleiades_directly(variation)
+                            if results:
                                 break
                 
-                if peripleo_results:
-                    best_match = peripleo_results[0]
-                    print(f"✓ Found match: {best_match.get('title', 'No title')}")
+                # Process results
+                if results:
+                    best_match = results[0]
+                    print(f"Found match: {best_match.get('title', 'No title')}")
                     
-                    # Enhanced data extraction
+                    # Store Pelagios data
                     entity['pelagios_data'] = {
                         'peripleo_id': best_match.get('identifier'),
                         'peripleo_title': best_match.get('title'),
@@ -471,92 +493,82 @@ class PelagiosIntegration:
                         'peripleo_url': best_match.get('identifier')
                     }
                     
-                    # Extract coordinates with multiple fallback strategies
+                    # Extract coordinates
                     self._extract_coordinates(entity, best_match)
                     
-                    # Enhanced Pleiades ID extraction
+                    # Extract Pleiades ID if available
                     pleiades_id = self._extract_pleiades_id(best_match)
                     if pleiades_id:
                         entity['pleiades_id'] = pleiades_id
                         entity['pleiades_url'] = f"{self.pleiades_base_url}/places/{pleiades_id}"
-                        print(f"✓ Added Pleiades link: {entity['pleiades_url']}")
+                        print(f"Added Pleiades link: {entity['pleiades_url']}")
+                    
+                    enhanced_count += 1
                 else:
-                    print(f"✗ No results found for '{entity_text}'")
+                    print(f"No results found for '{entity_text}'")
                 
-                time.sleep(0.5)  # Rate limiting
+                # Rate limiting
+                time.sleep(1.0)  # Be nice to the APIs
         
+        print(f"\nPelagios enhancement complete! Enhanced {enhanced_count}/{len(entities)} entities")
         return entities
     
     def _extract_coordinates(self, entity: Dict, match_data: Dict):
-        """Extract coordinates from various possible data structures."""
-        coords_found = False
+        """Extract coordinates from Pelagios data."""
+        # Look for geo_bounds with centroid
+        geo_bounds = match_data.get('geo_bounds')
+        if geo_bounds and isinstance(geo_bounds, dict):
+            centroid = geo_bounds.get('centroid')
+            if centroid and isinstance(centroid, dict):
+                lat = centroid.get('lat')
+                lon = centroid.get('lon')
+                if lat is not None and lon is not None:
+                    entity['latitude'] = float(lat)
+                    entity['longitude'] = float(lon)
+                    entity['geocoding_source'] = 'pelagios'
+                    print(f"Added coordinates: {lat}, {lon}")
+                    return
         
-        # Try multiple possible coordinate sources
-        for geo_key in ['geo_bounds', 'geometry', 'coordinates', 'location', 'spatial']:
-            geo_data = match_data.get(geo_key)
-            if not geo_data:
-                continue
-                
-            # Handle centroid format
-            if isinstance(geo_data, dict) and geo_data.get('centroid'):
-                centroid = geo_data['centroid']
-                if isinstance(centroid, dict) and 'lat' in centroid and 'lon' in centroid:
-                    entity['latitude'] = float(centroid['lat'])
-                    entity['longitude'] = float(centroid['lon'])
-                    coords_found = True
-                    break
-            
-            # Handle GeoJSON coordinates [lon, lat]
-            elif isinstance(geo_data, dict) and geo_data.get('coordinates'):
-                coords = geo_data['coordinates']
-                if isinstance(coords, list) and len(coords) >= 2:
+        # Fallback: look for other coordinate formats
+        for coord_key in ['coordinates', 'location', 'geometry']:
+            coords = match_data.get(coord_key)
+            if coords and isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                try:
                     entity['longitude'] = float(coords[0])
                     entity['latitude'] = float(coords[1])
-                    coords_found = True
-                    break
-            
-            # Handle direct coordinate arrays
-            elif isinstance(geo_data, list) and len(geo_data) >= 2:
-                try:
-                    entity['longitude'] = float(geo_data[0])
-                    entity['latitude'] = float(geo_data[1])
-                    coords_found = True
-                    break
+                    entity['geocoding_source'] = 'pelagios'
+                    print(f"Added coordinates: {coords[1]}, {coords[0]}")
+                    return
                 except (ValueError, TypeError):
                     continue
-        
-        if coords_found:
-            entity['geocoding_source'] = 'pelagios_peripleo'
-            print(f"✓ Added coordinates: {entity['latitude']}, {entity['longitude']}")
     
     def _extract_pleiades_id(self, match_data: Dict) -> Optional[str]:
-        """Extract Pleiades ID from various possible sources."""
-        # Direct source_id
-        if match_data.get('source_gazetteer') == 'pleiades' and match_data.get('source_id'):
-            return str(match_data['source_id'])
+        """Extract Pleiades ID from match data."""
+        # Direct source_id for Pleiades items
+        if match_data.get('source_gazetteer') == 'pleiades':
+            source_id = match_data.get('source_id')
+            if source_id:
+                return str(source_id)
         
-        # Extract from various URL fields
-        for url_key in ['identifier', 'uri', 'url', 'pleiades_url', 'link']:
-            url = match_data.get(url_key, '')
-            if isinstance(url, str) and 'pleiades.stoa.org/places/' in url:
-                parts = url.split('/places/')
-                if len(parts) > 1:
-                    pleiades_id = parts[1].split('/')[0].split('?')[0].split('#')[0]
-                    if pleiades_id.isdigit():
-                        return pleiades_id
+        # Extract from identifier/URL
+        identifier = match_data.get('identifier', '')
+        if 'pleiades.stoa.org/places/' in identifier:
+            try:
+                pleiades_id = identifier.split('/places/')[-1].split('/')[0].split('?')[0]
+                if pleiades_id.isdigit():
+                    return pleiades_id
+            except:
+                pass
         
         return None
 
-    # Keep all the export methods unchanged...
+    # Keep the export methods exactly the same as before...
     def export_to_recogito_format(self, text: str, entities: List[Dict], 
                                  title: str = "EntityLinker Export") -> str:
-        """
-        Export entities in Recogito-compatible JSON format.
-        """
+        """Export entities in Recogito-compatible JSON format."""
         annotations = []
         
         for idx, entity in enumerate(entities):
-            # Only export place entities for Recogito
             if entity['type'] in ['GPE', 'LOCATION', 'FACILITY', 'ADDRESS']:
                 annotation = {
                     "@id": f"annotation_{idx}",
@@ -580,7 +592,6 @@ class PelagiosIntegration:
                     "created": datetime.now().isoformat()
                 }
                 
-                # Add place identification if available
                 if entity.get('pleiades_id'):
                     annotation["body"].append({
                         "type": "SpecificResource",
@@ -600,7 +611,6 @@ class PelagiosIntegration:
                         }
                     })
                 
-                # Add coordinates if available
                 if entity.get('latitude') and entity.get('longitude'):
                     annotation["body"].append({
                         "type": "GeometryBody",
@@ -613,7 +623,6 @@ class PelagiosIntegration:
                 
                 annotations.append(annotation)
         
-        # Create Recogito document format
         recogito_export = {
             "@context": "http://www.w3.org/ns/anno.jsonld",
             "id": f"recogito_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -637,10 +646,7 @@ class PelagiosIntegration:
     
     def export_to_tei_xml(self, text: str, entities: List[Dict], 
                          title: str = "EntityLinker Export") -> str:
-        """
-        Export annotated text as TEI XML with place markup.
-        """
-        # Create TEI structure
+        """Export annotated text as TEI XML with place markup."""
         tei_ns = "http://www.tei-c.org/ns/1.0"
         ET.register_namespace('', tei_ns)
         
@@ -670,35 +676,30 @@ class PelagiosIntegration:
         # Convert to string
         xml_str = ET.tostring(root, encoding='unicode', method='xml')
         
-        # Add XML declaration and pretty format
+        # Add XML declaration
         pretty_xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
         
         return pretty_xml
     
     def _create_tei_markup(self, text: str, entities: List[Dict], tei_ns: str):
         """Create TEI markup with place tags."""
-        # Sort entities by start position
         sorted_entities = sorted(entities, key=lambda x: x['start'])
         
-        # Create paragraph element
         p = ET.Element("{%s}p" % tei_ns)
         
         current_pos = 0
         
         for entity in sorted_entities:
-            # Add text before entity
             if entity['start'] > current_pos:
                 if len(p) == 0 and p.text is None:
                     p.text = text[current_pos:entity['start']]
                 else:
-                    # Add to tail of last element
                     if len(p) > 0:
                         if p[-1].tail is None:
                             p[-1].tail = text[current_pos:entity['start']]
                         else:
                             p[-1].tail += text[current_pos:entity['start']]
             
-            # Create place name element based on entity type
             if entity['type'] in ['GPE', 'LOCATION']:
                 place_elem = ET.SubElement(p, "{%s}placeName" % tei_ns)
             elif entity['type'] == 'PERSON':
@@ -710,7 +711,6 @@ class PelagiosIntegration:
             
             place_elem.text = entity['text']
             
-            # Add attributes
             if entity.get('pleiades_id'):
                 place_elem.set('ref', entity['pleiades_url'])
             elif entity.get('wikidata_url'):
@@ -721,7 +721,6 @@ class PelagiosIntegration:
             
             current_pos = entity['end']
         
-        # Add remaining text
         if current_pos < len(text):
             if len(p) == 0:
                 p.text = (p.text or "") + text[current_pos:]
@@ -731,23 +730,18 @@ class PelagiosIntegration:
         return p
     
     def create_pelagios_map_url(self, entities: List[Dict]) -> str:
-        """
-        Create a Peripleo map URL showing all georeferenced entities.
-        """
-        # Filter entities with coordinates
+        """Create a Peripleo map URL showing all georeferenced entities."""
         geo_entities = [e for e in entities if e.get('latitude') and e.get('longitude')]
         
         if not geo_entities:
             return "https://peripleo.pelagios.org"
         
-        # Calculate bounding box
         lats = [e['latitude'] for e in geo_entities]
         lons = [e['longitude'] for e in geo_entities]
         
         min_lat, max_lat = min(lats), max(lats)
         min_lon, max_lon = min(lons), max(lons)
         
-        # Add some padding
         lat_padding = (max_lat - min_lat) * 0.1 or 0.01
         lon_padding = (max_lon - min_lon) * 0.1 or 0.01
         
