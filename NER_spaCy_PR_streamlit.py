@@ -992,139 +992,82 @@ class EntityLinker:
         return entities
     
     def _detect_geographical_context(self, text: str, entities: List[Dict[str, Any]]) -> List[str]:
-        """Enhanced geographical context detection."""
-        import re
-        
-        context_clues = []
-        text_lower = text.lower()
-        
-        # Enhanced location mapping with more comprehensive coverage
-        major_locations = {
-            # Countries and regions
-            'greece': ['greece', 'greek', 'hellas', 'hellenic'],
-            'egypt': ['egypt', 'egyptian'],
-            'persia': ['persia', 'persian', 'iran'],
-            'syria': ['syria', 'syrian', 'assyria', 'assyrian'],
-            'phoenicia': ['phoenicia', 'phoenician'],
-            'anatolia': ['anatolia', 'asia minor'],
-            'mesopotamia': ['mesopotamia', 'babylon', 'babylonia'],
-            'uk': ['uk', 'united kingdom', 'britain', 'great britain', 'england', 'scotland', 'wales'],
-            'usa': ['usa', 'united states', 'america', 'us '],
-            'italy': ['italy', 'italian', 'rome', 'roman'],
-            'france': ['france', 'french', 'gaul'],
-            
-            # Ancient regions for historical texts
-            'mediterranean': ['mediterranean', 'aegean', 'ionian'],
-            'black_sea': ['black sea', 'pontus', 'euxine'],
-            'red_sea': ['red sea', 'erythraean'],
-            
-            # Major ancient cities
-            'athens': ['athens', 'athenian'],
-            'sparta': ['sparta', 'spartan', 'lacedaemon'],
-            'thebes': ['thebes', 'theban'],
-            'corinth': ['corinth', 'corinthian'],
-            'argos': ['argos', 'argive'],
-            'troy': ['troy', 'trojan', 'ilium'],
-            'constantinople': ['constantinople', 'byzantium'],
-            'alexandria': ['alexandria', 'alexandrian'],
-            'antioch': ['antioch'],
-            'damascus': ['damascus'],
-            'baghdad': ['baghdad'],
-            'tabriz': ['tabriz'],
-            'samarkand': ['samarkand'],
-            'bukhara': ['bukhara']
-        }
-        
-        # Check for explicit mentions
-        for location, patterns in major_locations.items():
-            for pattern in patterns:
-                if pattern in text_lower:
-                    context_clues.append(location)
-                    break
-        
-        # Also check entities for geographical context
-        for entity in entities:
-            if entity['type'] in ['GPE', 'LOCATION'] and entity['text'].lower() not in [c.lower() for c in context_clues]:
-                context_clues.append(entity['text'].lower())
-        
-        return context_clues[:5]  # Return top 5 context clues
+        """
+        Use local Ollama LLM to infer geographical context from the text.
+        Requires Ollama running locally (e.g., `ollama run mistral`).
+        """
+        try:
+            import streamlit as st
+            from ollama import Client
+            import re
+    
+            with st.spinner("🤖 Getting geographical context from LLM (Ollama)..."):
+                client = Client(host='http://localhost:11434')
+    
+                short_text = text[:1500]  # keep within LLM limits
+                prompt = (
+                    "Extract up to 5 place names (regions, cities, countries, or historical areas) mentioned or implied "
+                    "in the following text. Just return a list, comma-separated:\n\n"
+                    f"{short_text}"
+                )
+    
+                response = client.chat(model='mistral', messages=[
+                    {"role": "user", "content": prompt}
+                ])
+                result = response['message']['content']
+    
+                # Clean up and extract
+                places = [p.strip() for p in re.split(r'[,\n]', result) if len(p.strip()) > 2]
+                return places[:5]
+        except Exception as e:
+            st.warning(f"Ollama context detection failed: {e}")
+            return []
 
     def _try_contextual_geocoding(self, entity, context_clues):
-        """Enhanced contextual geocoding with historical awareness."""
-        import requests
+        """
+        Improved contextual geocoding using Ollama to generate better search terms.
+        Falls back to geopy if Ollama is not available.
+        """
         import time
-        
-        if not context_clues:
-            return False
-        
-        # Create context-aware search terms with historical variants
-        search_variations = [entity['text']]
-        
-        # Add context to search terms
-        for context in context_clues:
-            context_mapping = {
-                'greece': ['Greece', 'Greek', 'Ancient Greece', 'Hellas'],
-                'egypt': ['Egypt', 'Ancient Egypt'],
-                'persia': ['Persia', 'Iran', 'Ancient Persia'],
-                'syria': ['Syria', 'Ancient Syria'],
-                'phoenicia': ['Phoenicia', 'Lebanon'],
-                'anatolia': ['Turkey', 'Asia Minor', 'Anatolia'],
-                'mesopotamia': ['Iraq', 'Mesopotamia'],
-                'uk': ['UK', 'United Kingdom', 'England', 'Britain'],
-                'usa': ['USA', 'United States', 'US'],
-                'italy': ['Italy', 'Ancient Rome'],
-                'france': ['France'],
-                'mediterranean': ['Mediterranean'],
-                'argos': ['Greece', 'Peloponnese'],
-                'athens': ['Greece', 'Attica'],
-                'sparta': ['Greece', 'Laconia'],
-                'troy': ['Turkey', 'Anatolia'],
-                'constantinople': ['Turkey', 'Istanbul'],
-                'alexandria': ['Egypt'],
-                'damascus': ['Syria'],
-                'baghdad': ['Iraq'],
-                'tabriz': ['Iran'],
-                'samarkand': ['Uzbekistan'],
-                'bukhara': ['Uzbekistan']
-            }
-            
-            context_variants = context_mapping.get(context, [context])
-            for variant in context_variants:
-                search_variations.extend([
-                    f"{entity['text']}, {variant}",
-                    f"{entity['text']} {variant}",
-                    f"ancient {entity['text']} {variant}" if 'ancient' not in entity['text'].lower() else f"{entity['text']} {variant}"
-                ])
-        
-        # Remove duplicates while preserving order
-        search_variations = list(dict.fromkeys(search_variations))
-        
-        # Try geopy first with context
+        import requests
+        from geopy.geocoders import Nominatim
+        from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+    
         try:
-            from geopy.geocoders import Nominatim
-            from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-            
-            geocoder = Nominatim(user_agent="EntityLinker/2.1", timeout=15)
-            
-            for search_term in search_variations[:7]:  # Try top 7 variations
-                try:
-                    location = geocoder.geocode(search_term, timeout=15)
-                    if location:
-                        entity['latitude'] = location.latitude
-                        entity['longitude'] = location.longitude
-                        entity['location_name'] = location.address
-                        entity['geocoding_source'] = f'geopy_contextual'
-                        entity['search_term_used'] = search_term
-                        return True
-                    
-                    time.sleep(0.3)  # Rate limiting
-                except (GeocoderTimedOut, GeocoderServiceError):
-                    continue
-                    
-        except ImportError:
-            pass
-        
+            from ollama import Client
+            client = Client(host='http://localhost:11434')
+    
+            # Prepare LLM prompt
+            context_string = ", ".join(context_clues[:5])
+            prompt = (
+                f"Disambiguate this place: '{entity['text']}' given the context: {context_string}. "
+                "Suggest a search string for geocoding (e.g., 'Thebes, Greece', 'Alexandria, Egypt'). "
+                "Respond with just one geocodable string."
+            )
+    
+            response = client.chat(model='mistral', messages=[
+                {"role": "user", "content": prompt}
+            ])
+            query = response['message']['content'].strip()
+    
+            # Geocode using geopy
+            geolocator = Nominatim(user_agent="EntityLinker-Ollama", timeout=10)
+            location = geolocator.geocode(query)
+    
+            if location:
+                entity['latitude'] = location.latitude
+                entity['longitude'] = location.longitude
+                entity['location_name'] = location.address
+                entity['geocoding_source'] = 'geopy_ollama'
+                entity['search_term_used'] = query
+                return True
+    
+            time.sleep(0.5)  # Be nice
+        except Exception as e:
+            print(f"Ollama-enhanced geocoding failed: {e}")
+    
         return False
+
     
     def _try_python_geocoding(self, entity):
         """Enhanced Python geocoding with multiple services."""
@@ -1195,27 +1138,73 @@ class EntityLinker:
         return False
     
     def _try_aggressive_geocoding(self, entity):
-        """Enhanced aggressive geocoding with more search strategies."""
+        """
+        Use Ollama to intelligently generate fallback geocoding strings for ambiguous or ancient places.
+        If Ollama fails, falls back to simple hardcoded variants.
+        """
         import requests
         import time
-        
-        # Try more variations of the entity name
-        search_variations = [
-            entity['text'],
-            f"{entity['text']}, Greece",  # Default to Greece for ancient names
-            f"{entity['text']}, Turkey",  # Many ancient places are now in Turkey
-            f"{entity['text']}, Italy",   # Or Italy
+    
+        try:
+            from ollama import Client
+            client = Client(host='http://localhost:11434')
+    
+            # Prompt for a good geocoding string
+            prompt = (
+                f"The entity '{entity['text']}' may be an ancient, historical, or modern place. "
+                "Suggest a single precise geocoding query that could locate it using OpenStreetMap, "
+                "including country or modern region if needed. Respond with only the search query."
+            )
+    
+            response = client.chat(model='mistral', messages=[
+                {"role": "user", "content": prompt}
+            ])
+            search_term = response['message']['content'].strip()
+    
+            # Try OpenStreetMap Nominatim geocoding
+            url = "https://nominatim.openstreetmap.org/search"
+            params = {
+                'q': search_term,
+                'format': 'json',
+                'limit': 1,
+                'addressdetails': 1,
+                'accept-language': 'en'
+            }
+            headers = {
+                'User-Agent': 'EntityLinker/2.1 (Academic Research)',
+                'Accept': 'application/json'
+            }
+    
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    result = data[0]
+                    entity['latitude'] = float(result['lat'])
+                    entity['longitude'] = float(result['lon'])
+                    entity['location_name'] = result['display_name']
+                    entity['geocoding_source'] = 'openstreetmap_ollama'
+                    entity['search_term_used'] = search_term
+                    return True
+    
+            time.sleep(0.4)
+        except Exception as e:
+            print(f"Ollama failed in aggressive geocoding: {e}")
+    
+        # Optional: fallback to old method if Ollama fails
+        fallback_variations = [
+            f"{entity['text']}, Greece",
+            f"{entity['text']}, Turkey",
+            f"{entity['text']}, Egypt",
             f"ancient {entity['text']}",
-            f"{entity['text']} ancient city",
-            f"{entity['text']} archaeological site",
-            entity['text'].split()[0] if ' ' in entity['text'] else entity['text'],  # First word only
+            f"{entity['text']} archaeological site"
         ]
-        
-        for search_term in search_variations:
+    
+        for term in fallback_variations:
             try:
                 url = "https://nominatim.openstreetmap.org/search"
                 params = {
-                    'q': search_term,
+                    'q': term,
                     'format': 'json',
                     'limit': 1,
                     'addressdetails': 1,
@@ -1225,24 +1214,24 @@ class EntityLinker:
                     'User-Agent': 'EntityLinker/2.1 (Academic Research)',
                     'Accept': 'application/json'
                 }
-            
+    
                 response = requests.get(url, params=params, headers=headers, timeout=15)
                 if response.status_code == 200:
                     data = response.json()
-                    if data and len(data) > 0:
+                    if data:
                         result = data[0]
                         entity['latitude'] = float(result['lat'])
                         entity['longitude'] = float(result['lon'])
                         entity['location_name'] = result['display_name']
-                        entity['geocoding_source'] = f'openstreetmap_aggressive'
-                        entity['search_term_used'] = search_term
+                        entity['geocoding_source'] = 'openstreetmap_fallback'
+                        entity['search_term_used'] = term
                         return True
-            
-                time.sleep(0.3)  # Rate limiting between attempts
+                time.sleep(0.3)
             except Exception:
                 continue
-        
+    
         return False
+
 
     def link_to_wikidata(self, entities):
         """Enhanced Wikidata linking with better search strategies."""
