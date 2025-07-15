@@ -408,10 +408,10 @@ class EntityLinker:
         priority_order = ['london', 'new york', 'paris', 'tokyo', 'sydney', 'uk', 'usa', 'canada', 'australia', 'france', 'germany']
         prioritized_context = []
 
-    # Show inferred historical context
-    st.markdown("### 🧠 Inferred Historical Context")
-    detected_context = infer_historical_context(text)
-    st.success(f"**{detected_context}**")
+        # Show inferred historical context
+        st.markdown("### 🧠 Inferred Historical Context")
+        detected_context = infer_historical_context(text)
+        st.success(f"**{detected_context}**")
         
         for priority_location in priority_order:
             if priority_location in context_clues:
