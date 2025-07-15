@@ -12,6 +12,25 @@ Version: 1.0 - Updated to use spaCy instead of NLTK
 
 import streamlit as st
 
+from transformers import pipeline
+import streamlit as st
+
+@st.cache_resource
+def load_context_model():
+    return pipeline("text2text-generation", model="google/flan-t5-base")
+
+context_model = load_context_model()
+
+def infer_historical_context(text):
+    """Use a lightweight local model to infer cultural or historical setting."""
+    prompt = f"What time period or cultural context does this text reflect? {text}"
+    try:
+        result = context_model(prompt, max_length=30, do_sample=False)[0]['generated_text']
+        return result.strip()
+    except Exception as e:
+        return f"Context detection failed: {e}"
+
+
 # Configure Streamlit page FIRST - before any other Streamlit commands
 st.set_page_config(
     page_title="From Text to Linked Data using spaCy",
@@ -388,6 +407,11 @@ class EntityLinker:
         # Prioritize context (more specific first)
         priority_order = ['london', 'new york', 'paris', 'tokyo', 'sydney', 'uk', 'usa', 'canada', 'australia', 'france', 'germany']
         prioritized_context = []
+
+    # Show inferred historical context
+    st.markdown("### 🧠 Inferred Historical Context")
+    detected_context = infer_historical_context(text)
+    st.success(f"**{detected_context}**")
         
         for priority_location in priority_order:
             if priority_location in context_clues:
